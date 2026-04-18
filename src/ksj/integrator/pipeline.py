@@ -86,7 +86,10 @@ def integrate(
     if dataset is None:
         raise KeyError(f"データセット '{code}' はカタログに存在しない")
 
-    plan = select_sources(dataset, year, strict_year=strict_year)
+    prefs_list = list(format_preference) if format_preference is not None else None
+    plan = select_sources(
+        dataset, year, strict_year=strict_year, format_preference=prefs_list
+    )
     target = pyproj.CRS.from_user_input(target_crs)
 
     manifest = load_manifest(data_dir)
@@ -97,7 +100,7 @@ def integrate(
         data_dir=data_dir,
         code=code,
         target=target,
-        format_preference=format_preference,
+        format_preference=prefs_list,
         allow_partial=allow_partial,
     )
     if not loaded.frames:
@@ -130,7 +133,7 @@ def integrate(
         target_crs=target_crs,
         source_zips=loaded.source_zips,
         layer_names=[layer_name],
-        extra_notes=list(plan.notes) + loaded.skipped_notes,
+        extra_notes=loaded.skipped_notes,
     )
 
     output_path = data_dir / "integrated" / f"{code}-{year}.gpkg"
@@ -178,7 +181,6 @@ def _load_and_reproject(
     ``allow_partial`` が True かつ manifest に無いソースがあればスキップし、
     スキップ内容を skipped_notes に積む。False なら即エラー。
     """
-    # format_preference は iterator で渡されると使い捨てになるので list 化
     prefs_list = list(format_preference) if format_preference is not None else None
     result = _LoadResult()
 

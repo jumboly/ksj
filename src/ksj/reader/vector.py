@@ -15,6 +15,11 @@ from pathlib import Path
 import geopandas as gpd
 import pyogrio
 
+# KSJ の ZIP はファイル名を Shift_JIS (cp932) で格納していることが多い。GDAL の
+# /vsizip/ は本設定が無いとバイト列を UTF-8 として解釈しようとして失敗するため、
+# モジュール読み込み時に一度だけ global config をセットする (再エントリ時も冪等)。
+pyogrio.set_gdal_config_options({"CPL_ZIP_ENCODING": "CP932"})
+
 
 class NoMatchingFormatError(LookupError):
     """ZIP 内に format_preference に一致するベクタが 1 つも無いとき送出する。
@@ -87,11 +92,17 @@ def _iter_vector_entries(zip_path: Path) -> Iterator[tuple[str, str]]:
     """ZIP 内のベクタファイルを (inner_name, format_key) で列挙する。
 
     ``inner_name`` は ZIP 内の相対パス。ディレクトリエントリ (末尾 ``/``) はスキップ。
+    KSJ の ZIP は Shift_JIS (cp932) でファイル名を格納することが多く、Python の
+    zipfile はデフォルトで cp437 として decode するため、mojibake を防ぐために
+    明示的に cp932 を指定する (UTF-8 flag が立っている ZIP では無視される)。
     """
-    with zipfile.ZipFile(zip_path) as zf:
-        for inner in sorted(zf.namelist()):
-            if inner.endswith("/"):
+    with zipfile.ZipFile(zip_path, metadata_encoding="cp932") as zf:
+        for raw in sorted(zf.namelist()):
+            if raw.endswith(("/", "\\")):
                 continue
+            # KSJ の一部 ZIP は Windows 由来でバックスラッシュ区切りのまま格納される。
+            # GDAL /vsizip/ は POSIX 区切り前提なので正規化する。
+            inner = raw.replace("\\", "/")
             format_key = _EXT_TO_FORMAT.get(Path(inner).suffix.lower())
             if format_key is not None:
                 yield inner, format_key

@@ -21,6 +21,20 @@ from ksj.catalog.schema import Dataset, FileEntry
 
 Strategy = Literal["national", "latest-fill", "strict-year"]
 
+# KSJ は GML を 1 次配布としており、属性の忠実性も高い。shp は DBF 254 バイト制限で
+# 列が切られるケースがあり、geojson は二次エクスポート扱いなので rank は低い。
+_DEFAULT_FORMAT_PREFERENCE: list[str] = ["gml_jpgis21", "shp", "geojson", "multi"]
+
+
+def _format_rank(format_key: str | None, prefs: list[str]) -> int:
+    """prefs 順での format 優先度 (低いほど優先)。未掲載は末尾に沈める。"""
+    if format_key is None:
+        return len(prefs)
+    try:
+        return prefs.index(format_key)
+    except ValueError:
+        return len(prefs)
+
 
 class NoSourcesError(LookupError):
     """``select_sources`` で採用できるファイルが 1 件も無いとき送出する。"""
@@ -79,12 +93,21 @@ def select_sources(
     year: str,
     *,
     strict_year: bool = False,
+    format_preference: list[str] | None = None,
 ) -> SelectionPlan:
-    """``year`` を対象に統合対象ファイル群を決定する。"""
+    """``year`` を対象に統合対象ファイル群を決定する。
+
+    ``format_preference`` は同一 (scope, 識別子) で複数 format が配布されている
+    データセット (例: A53 は shp/gml/geojson の 3 形式を同 bureau で配布) での
+    tie-break に使う。先頭ほど優先度が高い。未指定なら KSJ の 1 次配布形式を
+    優先する既定順を使う。
+    """
     if year not in dataset.versions:
         raise NoSourcesError(f"年度 {year} は登録されていない")
 
-    national = _find_latest_national(dataset, year)
+    prefs = format_preference if format_preference else _DEFAULT_FORMAT_PREFERENCE
+
+    national = _find_latest_national(dataset, year, prefs)
     if national is not None:
         source = SelectedSource(file_entry=national[1], year=national[0])
         return SelectionPlan(
@@ -94,7 +117,7 @@ def select_sources(
         )
 
     strategy: Strategy = "strict-year" if strict_year else "latest-fill"
-    buckets = _build_buckets(dataset, year, strict_year=strict_year)
+    buckets = _build_buckets(dataset, year, strict_year=strict_year, prefs=prefs)
     if not buckets:
         raise NoSourcesError(
             f"年度 {year} に採用できるソースが 0 件"
@@ -114,10 +137,14 @@ def select_sources(
     )
 
 
-def _find_latest_national(dataset: Dataset, year: str) -> tuple[str, FileEntry] | None:
+def _find_latest_national(
+    dataset: Dataset, year: str, prefs: list[str]
+) -> tuple[str, FileEntry] | None:
     """``year`` 以前で最も新しい national ファイルを (year, entry) で返す。
 
-    年度は KSJ 全データセットで YYYY 形式なので辞書順比較で十分。
+    年度は KSJ 全データセットで YYYY 形式なので辞書順比較で十分。同一年度で
+    複数 format が並んでいる場合 (例: N03 の shp/gml/geojson) は ``prefs`` 順で
+    1 つに絞る。
     """
     candidates: list[tuple[str, FileEntry]] = []
     for v_year, version in dataset.versions.items():
@@ -128,7 +155,7 @@ def _find_latest_national(dataset: Dataset, year: str) -> tuple[str, FileEntry] 
                 candidates.append((v_year, file_entry))
     if not candidates:
         return None
-    candidates.sort(key=lambda pair: pair[0])
+    candidates.sort(key=lambda pair: (pair[0], -_format_rank(pair[1].format, prefs)))
     return candidates[-1]
 
 
@@ -137,12 +164,13 @@ def _build_buckets(
     target_year: str,
     *,
     strict_year: bool,
+    prefs: list[str],
 ) -> dict[tuple[str, str], tuple[str, FileEntry]]:
     """(scope, identifier) ごとに採用する (year, FileEntry) を決める。
 
     strict_year=False なら target_year 以前の候補から最新年度を、
-    strict_year=True なら target_year 完全一致のみを採用。national は呼び出し元で
-    除外済みの前提。
+    strict_year=True なら target_year 完全一致のみを採用。同一年度内で複数 format
+    があるときは ``prefs`` 順で絞る。national は呼び出し元で除外済みの前提。
     """
     if strict_year:
         version = dataset.versions.get(target_year)
@@ -157,9 +185,28 @@ def _build_buckets(
                 continue
             key = (file_entry.scope, file_entry.scope_bucket_key)
             existing = buckets.get(key)
-            if existing is None or existing[0] < v_year:
+            if _should_replace(existing, v_year, file_entry, prefs):
                 buckets[key] = (v_year, file_entry)
     return buckets
+
+
+def _should_replace(
+    existing: tuple[str, FileEntry] | None,
+    new_year: str,
+    new_file: FileEntry,
+    prefs: list[str],
+) -> bool:
+    """同一 bucket の既存エントリを new で置き換えるか判定する。
+
+    新しい年度なら常に置き換え。同年度なら format_preference で上位に来るものを残す。
+    """
+    if existing is None:
+        return True
+    if existing[0] < new_year:
+        return True
+    if existing[0] == new_year:
+        return _format_rank(new_file.format, prefs) < _format_rank(existing[1].format, prefs)
+    return False
 
 
 def _summarize_coverage(
