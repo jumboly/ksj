@@ -1,8 +1,4 @@
-"""読込→CRS変換→スキーマ統一→結合→書出 の統合パイプライン。
-
-Phase 4 では national scope のみ対応。Phase 5 で分割結合 / scope union / latest-fill
-を追加する。
-"""
+"""読込→CRS変換→スキーマ統一→結合→書出 の統合パイプライン。"""
 
 from ksj.integrator.pipeline import (
     DEFAULT_TARGET_CRS,
@@ -11,17 +7,21 @@ from ksj.integrator.pipeline import (
     integrate,
 )
 from ksj.integrator.source_selector import (
-    NoNationalSourceError,
+    BucketCoverage,
+    NoSourcesError,
     SelectedSource,
-    select_national,
+    SelectionPlan,
+    select_sources,
 )
 
 __all__ = [
     "DEFAULT_TARGET_CRS",
+    "BucketCoverage",
     "DownloadRequiredError",
     "IntegrateResult",
-    "NoNationalSourceError",
+    "NoSourcesError",
     "SelectedSource",
+    "SelectionPlan",
     "integrate",
-    "select_national",
+    "select_sources",
 ]

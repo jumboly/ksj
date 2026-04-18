@@ -3,11 +3,13 @@
 from ksj.reader.vector import (
     NoMatchingFormatError,
     VectorLayer,
+    default_encoding_for,
     read_zip,
 )
 
 __all__ = [
     "NoMatchingFormatError",
     "VectorLayer",
+    "default_encoding_for",
     "read_zip",
 ]

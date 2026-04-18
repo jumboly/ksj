@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -9,6 +10,7 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.logging import RichHandler
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -43,7 +45,7 @@ from ksj.html_cache import CachePolicy
 from ksj.integrator import (
     DEFAULT_TARGET_CRS,
     DownloadRequiredError,
-    NoNationalSourceError,
+    NoSourcesError,
 )
 from ksj.integrator import (
     integrate as integrate_dataset,
@@ -75,9 +77,26 @@ console = Console()
 err_console = Console(stderr=True)
 
 
+def _configure_logging() -> None:
+    """``ksj`` ロガーに rich ハンドラを付ける。
+
+    root を掴まないのは、ライブラリとして import する利用側の logging 設定を
+    上書きしないため。冪等にして繰り返し import で handler が累積するのを防ぐ。
+    propagate はデフォルトの True のまま残す (caplog など root attach テスト互換)。
+    """
+    logger = logging.getLogger("ksj")
+    if any(isinstance(h, RichHandler) for h in logger.handlers):
+        return
+    handler = RichHandler(console=err_console, show_time=False, show_path=False, markup=False)
+    handler.setLevel(logging.INFO)
+    logger.addHandler(handler)
+    logger.setLevel(logging.WARNING)
+
+
 @app.callback()
 def _main() -> None:
     """Typer がサブコマンド構造になるよう明示的なコールバックを置く。"""
+    _configure_logging()
 
 
 @app.command()
@@ -657,8 +676,28 @@ def integrate(
         ),
     ] = None,
     data_dir: Annotated[Path, typer.Option("--data-dir", help="データ格納ルート。")] = Path("data"),
+    strict_year: Annotated[
+        bool,
+        typer.Option(
+            "--strict-year",
+            help="対象年度と完全一致する識別子のみ採用 (latest-fill を無効化)。",
+        ),
+    ] = False,
+    allow_partial: Annotated[
+        bool,
+        typer.Option(
+            "--allow-partial",
+            help="manifest に無いソースをスキップして続行する (警告のみ)。",
+        ),
+    ] = False,
 ) -> None:
-    """national scope のファイルを 1 本に統合し GeoPackage へ書き出す (Phase 4)。"""
+    """national / prefecture / mesh / urban_area / regional_bureau を 1 本の GeoPackage に統合する。
+
+    national があれば national 1 本で終了。無ければ scope + 識別子ごとに
+    「対象年度以前で最新」を 1 件ずつ採用して union する (latest-fill)。
+    --strict-year で年度完全一致のみに制限、--allow-partial で未取得ソースを
+    無視して続行する。
+    """
 
     catalog = _load_or_exit()
     try:
@@ -672,10 +711,12 @@ def integrate(
                 data_dir=data_dir,
                 target_crs=target_crs,
                 format_preference=_parse_format_preference(format_preference),
+                strict_year=strict_year,
+                allow_partial=allow_partial,
             )
     except (
         KeyError,
-        NoNationalSourceError,
+        NoSourcesError,
         DownloadRequiredError,
         NoMatchingFormatError,
     ) as exc:
@@ -683,6 +724,10 @@ def integrate(
         raise typer.Exit(code=1) from exc
 
     console.print(f"[green]統合完了[/green]: {result.output_path}")
-    console.print(f"  source ZIP : {result.source_zip}")
+    console.print(f"  strategy   : {result.strategy} (sources={result.source_count})")
     console.print(f"  target CRS : {result.target_crs} (converted={result.crs_converted})")
     console.print(f"  layers     : {', '.join(result.layer_names)}")
+    if len(result.source_zips) == 1:
+        console.print(f"  source ZIP : {result.source_zips[0]}")
+    else:
+        console.print(f"  source ZIPs: {len(result.source_zips)} files")

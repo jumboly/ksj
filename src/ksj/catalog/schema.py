@@ -69,6 +69,20 @@ _SCOPE_DISPLAY_FIELDS: dict[str, tuple[str, ...]] = {
     **{f"mesh{i}": ("mesh_code",) for i in range(1, 7)},
 }
 
+# scope → バケット化用の識別子フィールドのフォールバック順 (code 優先)。
+# name は表記ゆれ (「北海道」vs「北海道庁」等) を含みうるため、横断バケット化では
+# 不安定になり得る。表示用の _SCOPE_DISPLAY_FIELDS と対になる名義。
+_SCOPE_BUCKET_FIELDS: dict[str, tuple[str, ...]] = {
+    "prefecture": ("pref_code", "pref_name"),
+    "region": ("region_code", "region_name"),
+    "regional_bureau": ("bureau_code", "bureau_name"),
+    "urban_area": ("urban_area_code", "urban_area_name"),
+    "river": ("river_id", "river_name"),
+    "municipality": ("muni_code", "muni_name"),
+    "special": ("special_code", "special_name"),
+    **{f"mesh{i}": ("mesh_code",) for i in range(1, 7)},
+}
+
 
 class FileEntry(BaseModel):
     """1 URL 分のダウンロード対象。HTML テーブルの 1 行に対応する。
@@ -90,6 +104,9 @@ class FileEntry(BaseModel):
     )
     crs_raw: str | None = None
     size_bytes: int | None = None
+    # Phase 5 追加。KSJ Shp は実質 Shift_JIS (cp932) 固定だが、新しめの配布で UTF-8 の
+    # ケースもあり、HTML から自動抽出できないので optional で手書き override する余地を残す。
+    encoding: Literal["utf-8", "cp932"] | None = None
 
     pref_code: int | None = Field(default=None, ge=1, le=47)
     pref_name: str | None = None
@@ -126,6 +143,19 @@ class FileEntry(BaseModel):
         schema 側にまとめる。name が無ければ code にフォールバックする。
         """
         for field in _SCOPE_DISPLAY_FIELDS.get(self.scope, ()):
+            value = getattr(self, field)
+            if value is not None:
+                return str(value)
+        return ""
+
+    @property
+    def scope_bucket_key(self) -> str:
+        """分割統合でのバケット化キー (表記ゆれを避けるため code 優先)。
+
+        ``scope_identifier`` との対比: こちらは年度横断のバケット化が目的なので
+        表示名より識別子コードの方が安定して信頼できる。
+        """
+        for field in _SCOPE_BUCKET_FIELDS.get(self.scope, ()):
             value = getattr(self, field)
             if value is not None:
                 return str(value)

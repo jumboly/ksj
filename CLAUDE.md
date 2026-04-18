@@ -17,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | Phase 2: カタログスクレイパ (catalog refresh) | ✅ 完了 |
 | Phase 3: ダウンローダ (download / ingest-local) | ✅ 完了 |
 | Phase 4: 統合パイプライン (national のみ) | ✅ 完了 |
-| Phase 5: 分割統合 (prefecture / mesh / urban_area / regional_bureau) | 未着手 |
+| Phase 5: 分割統合 (prefecture / mesh / urban_area / regional_bureau) | 🔧 作業中 |
 | Phase 6: GeoParquet + convert | 未着手 |
 | Phase 7: MVP 5 データセット E2E + ドキュメント | 未着手 |
 

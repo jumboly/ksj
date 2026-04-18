@@ -75,8 +75,10 @@ warn_redundant_casts = true
 
 # 地理空間ライブラリは型スタブを公式提供していない。本体コードでも Any 化を避けるため、
 # 「import 不可エラーの抑制」のみ行い、関数シグネチャは自前で書く。
+# pandas は別途 pandas-stubs があるが、geopandas 経由で API 境界が Any に倒れるため
+# 単独で型付けしても得るものが少なく、同じ扱いに寄せる。
 [[tool.mypy.overrides]]
-module = ["geopandas", "geopandas.*", "pyogrio", "pyogrio.*", "shapely", "shapely.*"]
+module = ["geopandas", "geopandas.*", "pyogrio", "pyogrio.*", "shapely", "shapely.*", "pandas", "pandas.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

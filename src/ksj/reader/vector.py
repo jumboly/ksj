@@ -3,13 +3,6 @@
 GDAL の ``/vsizip/`` 仮想ファイルシステム経由で、ZIP を展開せず直接読む。
 これにより N03 (1.5GB+ の SHP+GeoJSON+GML 同梱 ZIP) のような大物でも
 ディスクに展開しなくて済む。
-
-Phase 4 の責務:
-- ZIP 内の拡張子から形式を判定し、`format_preference` 順で 1 形式を選ぶ
-- その形式に該当する全ファイルを GeoDataFrame として読む
-
-Phase 5 では Shift_JIS / UTF-8 の自動判定や、単一ファイル内マルチレイヤの
-扱いを追加する予定。Phase 4 は UTF-8 固定。
 """
 
 from __future__ import annotations
@@ -47,6 +40,18 @@ _FORMAT_ALIASES: dict[str, set[str]] = {
     "gml_jpgis21": {"gml", "gml_jpgis21", "gml_jpgis2014"},
     "geojson": {"geojson", "json"},
 }
+
+
+def default_encoding_for(format_key: str) -> str | None:
+    """format に対する既定エンコーディング。
+
+    KSJ の Shapefile は歴史的にほぼ Shift_JIS (cp932) で、.cpg が付かない配布も
+    多い。GML/GeoJSON は仕様上 UTF-8 が保証されるので pyogrio の自動判定に任せる
+    (None を返す)。
+    """
+    if format_key == "shp":
+        return "cp932"
+    return None
 
 
 @dataclass(slots=True)
@@ -96,12 +101,17 @@ def read_zip(
     zip_path: Path,
     *,
     format_preference: Iterable[str] | None = None,
+    encoding: str | None = None,
 ) -> list[VectorLayer]:
     """ZIP 内の preference 順で見つかった全ベクタを読み込んで返す。
 
     同一 ZIP 内に同形式のファイルが複数あるケース (例: N03 の本体 + ``_prefecture``)
     では両方を読む。レイヤ名はファイル stem を使う。GDAL は Shapefile を読むとき
     同じディレクトリ (= ZIP 内同階層) の .shx / .dbf / .prj / .cpg を自動で参照する。
+
+    ``encoding`` を指定すると pyogrio の ``encoding`` 引数にそのまま渡る。KSJ の
+    Shapefile は実質 Shift_JIS (cp932) 固定、GML/GeoJSON は UTF-8 が仕様で保証
+    されるので、pipeline 側で format ごとに切り替える想定。
     """
     preferences = _normalize_preferences(format_preference)
 
@@ -121,7 +131,10 @@ def read_zip(
     for inner in by_format[chosen_format]:
         # GDAL VSI: /vsizip/<zip-path>/<inner> で ZIP 内ファイルを直接読める
         vsi_path = f"/vsizip/{zip_path}/{inner}"
-        gdf = pyogrio.read_dataframe(vsi_path)
+        read_kwargs: dict[str, object] = {}
+        if encoding is not None:
+            read_kwargs["encoding"] = encoding
+        gdf = pyogrio.read_dataframe(vsi_path, **read_kwargs)
         layers.append(
             VectorLayer(
                 layer_name=Path(inner).stem,
