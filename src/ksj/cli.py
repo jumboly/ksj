@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
 import typer
@@ -9,6 +10,11 @@ from rich.table import Table
 from ksj import __version__
 from ksj.catalog import Catalog, Dataset, load_catalog
 from ksj.catalog.loader import CatalogNotFoundError
+from ksj.catalog.refresh import (
+    diff_catalogs,
+    refresh_catalog,
+    save_catalog,
+)
 
 app = typer.Typer(
     name="ksj",
@@ -16,6 +22,13 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+
+catalog_app = typer.Typer(
+    name="catalog",
+    help="カタログ操作 (refresh / diff)",
+    no_args_is_help=True,
+)
+app.add_typer(catalog_app, name="catalog")
 
 console = Console()
 err_console = Console(stderr=True)
@@ -149,3 +162,88 @@ def info(
                 f.url,
             )
         console.print(table)
+
+
+@catalog_app.command("refresh")
+def catalog_refresh(
+    only: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--only",
+            help="指定データセットのみスクレイプする (複数指定可)。"
+            " 他は既存カタログのまま保持される。",
+        ),
+    ] = None,
+    parallel: Annotated[int, typer.Option("--parallel", help="ホスト別の同時接続数。")] = 2,
+    rate: Annotated[
+        float,
+        typer.Option(
+            "--rate",
+            help="ホスト別の秒間リクエスト数上限 (レート制限)。",
+        ),
+    ] = 1.0,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="カタログ YAML を上書きせずサマリのみ表示。",
+        ),
+    ] = False,
+) -> None:
+    """KSJ サイトを再スクレイプし catalog/datasets.yaml を更新する。"""
+
+    with console.status("[cyan]スクレイピング中...[/cyan]", spinner="dots"):
+        catalog, summary = asyncio.run(
+            refresh_catalog(
+                only=only,
+                parallel=parallel,
+                rate_per_sec=rate,
+            )
+        )
+
+    console.print(
+        f"[green]取得完了[/green]: {summary.total_datasets} データセット"
+        f" (新規 {len(summary.added)} / 更新 {len(summary.updated)}"
+        f" / 未変更保持 {len(summary.skipped)})"
+    )
+    if summary.unsupported:
+        console.print(
+            f"[yellow]フォームベース配布 (自動 URL 取得不可)[/yellow]: "
+            f"{', '.join(summary.unsupported)}"
+        )
+    if summary.warnings:
+        console.print(f"[yellow]{len(summary.warnings)} 件の警告 (先頭 3 件のみ表示):[/yellow]")
+        for w in summary.warnings[:3]:
+            console.print(f"  {w}")
+
+    if dry_run:
+        console.print("[dim]--dry-run のためファイル書き出しはスキップ[/dim]")
+        return
+
+    path = save_catalog(catalog)
+    console.print(f"[green]書き出し[/green]: {path}")
+
+
+@catalog_app.command("diff")
+def catalog_diff() -> None:
+    """同梱カタログ YAML と最新スクレイプ結果の差分を表示する。"""
+
+    current = _load_or_exit()
+    with console.status("[cyan]スクレイピング中...[/cyan]", spinner="dots"):
+        fresh, _ = asyncio.run(refresh_catalog())
+
+    diff = diff_catalogs(current, fresh)
+
+    table = Table(title="catalog diff")
+    table.add_column("kind", style="cyan")
+    table.add_column("code")
+    for code in diff.added:
+        table.add_row("[green]added[/green]", code)
+    for code in diff.removed:
+        table.add_row("[red]removed[/red]", code)
+    for code in diff.changed:
+        table.add_row("[yellow]changed[/yellow]", code)
+    console.print(table)
+
+    if not (diff.added or diff.removed or diff.changed):
+        console.print("[green]差分なし[/green]")

@@ -37,6 +37,8 @@ Format = Literal[
     "geojson",
     "csv",
     "geotiff",
+    # 1 つの ZIP に複数形式が同梱されているケース (N03 等。HTML のデータフォーマット欄が複数言及)
+    "multi",
     "unknown",
 ]
 
@@ -133,12 +135,16 @@ class FileEntry(BaseModel):
 
 
 class Version(BaseModel):
-    """ある年度の配布データ一式。"""
+    """ある年度の配布データ一式。
+
+    files は空 (``[]``) も許す: A55 のようなフォーム配布データセットは URL を
+    列挙できないため、カタログ上は version を空で保持しメタのみ提供する。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     reference_date: date | None = None
-    files: list[FileEntry] = Field(min_length=1)
+    files: list[FileEntry] = Field(default_factory=list)
     # データセットごとに異なる欠損値コード (例: -999, 9999)。統合時に NaN 化する
     null_values: list[int | float | str] = Field(default_factory=list)
     notes: str | None = None
@@ -161,7 +167,7 @@ class Dataset(BaseModel):
     coverage_notes: str | None = None
     notes: str | None = None
     # year 文字列 → Version。YAML 側では "2025" のようなキーで保持される
-    versions: dict[str, Version] = Field(min_length=1)
+    versions: dict[str, Version] = Field(default_factory=dict)
 
 
 class Catalog(BaseModel):

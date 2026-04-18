@@ -42,17 +42,25 @@ def test_load_missing_path_raises(tmp_path: Path) -> None:
         load_catalog(tmp_path / "nope.yaml")
 
 
-def test_g04a_uses_different_host() -> None:
-    """G04-a は www.gsi.go.jp でホストされていることを回帰テスト。"""
+def test_g04a_is_mesh2_distribution() -> None:
+    """G04-a は 2 次メッシュ単位で配布されていることの回帰テスト。
+
+    配布ホストは過去の調査では www.gsi.go.jp だったが、2026-04 時点で
+    nlftp.mlit.go.jp に移行している。scope の検証に絞る。
+    """
     catalog = load_catalog()
     dataset = catalog.datasets["G04-a"]
-    urls = [f.url for version in dataset.versions.values() for f in version.files]
-    assert all(url.startswith("https://www.gsi.go.jp/") for url in urls)
+    scopes = {f.scope for v in dataset.versions.values() for f in v.files}
+    assert scopes == {"mesh2"}
 
 
 def test_a03_has_urban_area_scope() -> None:
+    """A03 は三大都市圏 (SYUTO/CHUBU/KINKI) のみ配布されることの回帰テスト。"""
     catalog = load_catalog()
     dataset = catalog.datasets["A03"]
     scopes = {f.scope for v in dataset.versions.values() for f in v.files}
     assert scopes == {"urban_area"}
-    assert dataset.coverage == "partial"
+    urban_codes = {
+        f.urban_area_code for v in dataset.versions.values() for f in v.files if f.urban_area_code
+    }
+    assert urban_codes == {"SYUTO", "CHUBU", "KINKI"}

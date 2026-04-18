@@ -44,9 +44,9 @@ def test_file_entry_unknown_scope_rejected() -> None:
         FileEntry.model_validate(_base_file(scope="intergalactic"))
 
 
-def test_version_requires_at_least_one_file() -> None:
-    with pytest.raises(ValidationError):
-        Version.model_validate({"files": []})
+def test_version_allows_empty_files_for_form_based_datasets() -> None:
+    v = Version.model_validate({"files": []})
+    assert v.files == []
 
 
 def test_dataset_round_trip() -> None:
