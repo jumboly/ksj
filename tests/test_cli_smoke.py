@@ -7,7 +7,6 @@
 
 `ksj integrate` は `ksj.cli.load_catalog()` を引数なしで呼んで同梱 datasets.yaml
 を読みに行くため、テスト中は monkeypatch で fixture catalog に差し替える。
-manifest はファイルシステムで完結するので _seed_manifest で直接書く。
 """
 
 from __future__ import annotations
@@ -15,7 +14,6 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Callable
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,46 +22,6 @@ from typer.testing import CliRunner
 
 from ksj.catalog.schema import Catalog, Dataset, FileEntry, Version
 from ksj.cli import app
-from ksj.downloader.manifest import ManifestEntry, load_manifest, save_manifest
-
-
-def _stage_zip(raw_dir: Path, src_zip: Path) -> Path:
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    dest = raw_dir / src_zip.name
-    dest.write_bytes(src_zip.read_bytes())
-    return dest
-
-
-def _seed_manifest(
-    data_dir: Path,
-    code: str,
-    year: str,
-    *,
-    entries: list[dict[str, Any]],
-) -> None:
-    """manifest.json に entries を書き込む (既存があればマージ)。
-
-    test_pipeline.py の同名ヘルパと同等。url を catalog の FileEntry.url と
-    一致させる必要がある (pipeline._build_manifest_index の key 一致条件)。
-    """
-    manifest = load_manifest(data_dir)
-    manifest.set_entries(
-        code,
-        year,
-        [
-            ManifestEntry(
-                url=e["url"],
-                path=e["rel_path"],
-                size_bytes=e["size"],
-                downloaded_at=datetime.now(UTC).replace(microsecond=0),
-                scope=e.get("scope"),
-                scope_identifier=e.get("scope_identifier", ""),
-                format=e.get("format", "shp"),
-            )
-            for e in entries
-        ],
-    )
-    save_manifest(manifest, data_dir)
 
 
 def _patch_catalog(monkeypatch: pytest.MonkeyPatch, catalog: Catalog) -> None:
@@ -96,12 +54,14 @@ def test_smoke_national(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     write_shapefile_zip: Callable[..., Path],
+    stage_zip: Callable[[Path, Path], Path],
+    seed_manifest: Callable[..., None],
     tiny_geodataframe: Any,
 ) -> None:
     """N03 相当: national scope, JGD2011, ZIP 1 本で完結。"""
     data_dir = tmp_path / "data"
     src_zip = write_shapefile_zip(tiny_geodataframe, "N03-2025")
-    dest = _stage_zip(data_dir / "raw" / "N03" / "2025", src_zip)
+    dest = stage_zip(data_dir / "raw" / "N03" / "2025", src_zip)
 
     url = "https://example.com/N03-2025.zip"
     catalog = Catalog(
@@ -127,7 +87,7 @@ def test_smoke_national(
             )
         }
     )
-    _seed_manifest(
+    seed_manifest(
         data_dir,
         "N03",
         "2025",
@@ -158,6 +118,8 @@ def test_smoke_mesh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     write_shapefile_zip: Callable[..., Path],
+    stage_zip: Callable[[Path, Path], Path],
+    seed_manifest: Callable[..., None],
     tiny_geodataframe: Any,
 ) -> None:
     """L03-a 2021 相当: mesh3 を 3 メッシュ分 union (latest-fill, JGD2011)。"""
@@ -177,7 +139,7 @@ def test_smoke_mesh(
             crs="EPSG:6668",
         )
         src_zip = write_shapefile_zip(gdf, f"L03-a-2021-{mesh}")
-        dest = _stage_zip(raw_dir, src_zip)
+        dest = stage_zip(raw_dir, src_zip)
         url = f"https://example.com/L03-a-2021-{mesh}.zip"
         catalog_files.append(
             {
@@ -211,7 +173,7 @@ def test_smoke_mesh(
             )
         }
     )
-    _seed_manifest(data_dir, "L03-a", "2021", entries=manifest_entries)
+    seed_manifest(data_dir, "L03-a", "2021", entries=manifest_entries)
     _patch_catalog(monkeypatch, catalog)
 
     result = _invoke_integrate(data_dir, "L03-a", "2021")
@@ -230,13 +192,15 @@ def test_smoke_legacy_crs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     write_shapefile_zip: Callable[..., Path],
+    stage_zip: Callable[[Path, Path], Path],
+    seed_manifest: Callable[..., None],
     legacy_geodataframe: Any,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """L03-a 1976 相当: 旧測地系 (Tokyo Datum / EPSG:4301) → JGD2011 変換 + WARNING。"""
     data_dir = tmp_path / "data"
     src_zip = write_shapefile_zip(legacy_geodataframe, "L03-a-1976-5339")
-    dest = _stage_zip(data_dir / "raw" / "L03-a" / "1976", src_zip)
+    dest = stage_zip(data_dir / "raw" / "L03-a" / "1976", src_zip)
 
     url = "https://example.com/L03-a-1976-5339.zip"
     catalog = Catalog(
@@ -263,7 +227,7 @@ def test_smoke_legacy_crs(
             )
         }
     )
-    _seed_manifest(
+    seed_manifest(
         data_dir,
         "L03-a",
         "1976",
@@ -296,6 +260,8 @@ def test_smoke_urban_area(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     write_shapefile_zip: Callable[..., Path],
+    stage_zip: Callable[[Path, Path], Path],
+    seed_manifest: Callable[..., None],
 ) -> None:
     """A03 相当: urban_area (SYUTO/CHUBU/KINKI) の partial 統合。"""
     import geopandas as gpd
@@ -314,7 +280,7 @@ def test_smoke_urban_area(
             crs="EPSG:6668",
         )
         src_zip = write_shapefile_zip(gdf, f"A03-2003-{area}")
-        dest = _stage_zip(raw_dir, src_zip)
+        dest = stage_zip(raw_dir, src_zip)
         url = f"https://example.com/A03-2003-{area}.zip"
         catalog_files.append(
             {
@@ -349,7 +315,7 @@ def test_smoke_urban_area(
             )
         }
     )
-    _seed_manifest(data_dir, "A03", "2003", entries=manifest_entries)
+    seed_manifest(data_dir, "A03", "2003", entries=manifest_entries)
     _patch_catalog(monkeypatch, catalog)
 
     result = _invoke_integrate(data_dir, "A03", "2003")
@@ -366,6 +332,8 @@ def test_smoke_regional_bureau(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     write_shapefile_zip: Callable[..., Path],
+    stage_zip: Callable[[Path, Path], Path],
+    seed_manifest: Callable[..., None],
 ) -> None:
     """A53 相当: regional_bureau × 3 整備局の union。"""
     import geopandas as gpd
@@ -384,7 +352,7 @@ def test_smoke_regional_bureau(
             crs="EPSG:6668",
         )
         src_zip = write_shapefile_zip(gdf, f"A53-2024-{bureau}")
-        dest = _stage_zip(raw_dir, src_zip)
+        dest = stage_zip(raw_dir, src_zip)
         url = f"https://example.com/A53-2024-{bureau}.zip"
         catalog_files.append(
             {
@@ -419,7 +387,7 @@ def test_smoke_regional_bureau(
             )
         }
     )
-    _seed_manifest(data_dir, "A53", "2024", entries=manifest_entries)
+    seed_manifest(data_dir, "A53", "2024", entries=manifest_entries)
     _patch_catalog(monkeypatch, catalog)
 
     result = _invoke_integrate(data_dir, "A53", "2024")

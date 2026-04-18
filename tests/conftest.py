@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import zipfile
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -120,3 +121,62 @@ def write_prefecture_zips(
         return zips
 
     return _factory
+
+
+@pytest.fixture
+def stage_zip() -> Callable[[Path, Path], Path]:
+    """``write_shapefile_zip`` の出力を ``data/raw/<code>/<year>/`` に配置するヘルパ。
+
+    pipeline は manifest の path から ZIP を解決するので、テストでは fixture ZIP を
+    raw 配下にコピーして配置する必要がある。
+    """
+
+    def _stage(raw_dir: Path, src_zip: Path) -> Path:
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        dest = raw_dir / src_zip.name
+        dest.write_bytes(src_zip.read_bytes())
+        return dest
+
+    return _stage
+
+
+@pytest.fixture
+def seed_manifest() -> Callable[..., None]:
+    """``ksj.downloader.manifest`` を直接書き込んで integrate の事前状態を作るヘルパ。
+
+    entries の dict は ``url`` / ``rel_path`` / ``size`` を必須とし、``scope`` /
+    ``scope_identifier`` / ``format`` は entry 個別 → 引数フォールバックの順で解決する。
+    pipeline._build_manifest_index は ``url`` で catalog FileEntry と一致を取るので、
+    呼び出し側は url を catalog 側と揃える必要がある。
+    """
+    from ksj.downloader.manifest import ManifestEntry, load_manifest, save_manifest
+
+    def _seed(
+        data_dir: Path,
+        code: str,
+        year: str,
+        *,
+        entries: list[dict[str, Any]],
+        scope: str | None = None,
+        format: str = "shp",
+    ) -> None:
+        manifest = load_manifest(data_dir)
+        manifest.set_entries(
+            code,
+            year,
+            [
+                ManifestEntry(
+                    url=e["url"],
+                    path=e["rel_path"],
+                    size_bytes=e["size"],
+                    downloaded_at=datetime.now(UTC).replace(microsecond=0),
+                    scope=e.get("scope", scope),
+                    scope_identifier=e.get("scope_identifier", ""),
+                    format=e.get("format", format),
+                )
+                for e in entries
+            ],
+        )
+        save_manifest(manifest, data_dir)
+
+    return _seed
