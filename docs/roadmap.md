@@ -174,6 +174,88 @@ duckdb.sql(\"SELECT count(*) FROM 'data/integrated/N03-2025.parquet'\").show()"
 
 ---
 
+## Phase 8: AI エージェント連携 (v0.2.0 候補)
+
+**動機**: 対話的な KSJ 探査 (「どのデータセットが全国版を持たない?」「A31a の最新版は何ファイル?」「N03 の最新版だけ DL して Parquet に変換して」等) を自然言語インタフェースから通せるようにする。現在の CLI は CliRunner で呼ばれる前提の rich 出力がデフォルトだが、エージェントは構造化データを期待する。
+
+**成果物**:
+- **`--json` / `--format json` 出力モード** (全サブコマンド対象、特に `list` / `info` / `catalog diff` / `download` / `integrate` / `convert` の実行結果):
+  - rich Table / ログ風メッセージの代わりに JSON Lines または 単一 JSON を stdout に
+  - 成功時スキーマと失敗時スキーマ (exit_code, error_kind, message) を docs 化
+  - 既存動作との互換: フラグ未指定時は rich 出力のまま
+- **MCP server** (`src/ksj/mcp/` 新設):
+  - `ksj mcp serve` サブコマンドで stdio / SSE サーバー起動
+  - 公開する Tool: `ksj_list` / `ksj_info` / `ksj_catalog_summary` / `ksj_download` / `ksj_integrate` / `ksj_convert` / `ksj_catalog_refresh` (取り扱い注意の副作用ありは明記)
+  - Tool ごとに JSONSchema を定義 (scope / format / crs_filter の選択肢を enum で列挙)
+  - 副作用の分離: read-only (list/info/summary) と write (download/integrate/convert/refresh) を明示マーク
+- **エージェント向けドキュメント** (`docs/agent.md`):
+  - どの Tool が副作用ありか、並列実行可否、レート制限の扱い
+  - 典型フロー (「全国版のみ DL」「特定 scope 統合」) をサンプル
+  - Claude Desktop / Claude Code での接続手順
+
+**スコープ外** (Phase 8+ 以降):
+- リアルタイム進捗のストリーミング (download の per-file 進捗を MCP の partial response で返す等)
+- エージェント固有の高レベル DSL (「災害系で A31a + A53 を両方 DL → 結合」といった 1 行指示)
+
+**動作確認**:
+```bash
+# --json 出力
+uv run ksj list --json | jq '.[] | select(.scopes | contains(["national"]) | not) | .code'
+uv run ksj info A31a --json | jq '.versions["2024"].files | length'
+
+# MCP server 起動 (stdio)
+uv run ksj mcp serve
+# 別端末で Claude Code などから接続し、自然言語で ksj tool を呼べること
+```
+
+**参考**:
+- MCP プロトコル仕様: https://modelcontextprotocol.io/
+- 現 CLI は typer サブコマンド構造で薄いため、`cli.py` 各コマンドのハンドラ関数を再利用して JSON 出力分岐を足す形で収まる想定 (大きな refactor は不要)
+
+---
+
+## 要調査項目
+
+### `DownLd_new(...)` 変種とカタログ漏れの扱い (2026-04-18 発見)
+
+**現象**: 現行パーサー (`src/ksj/catalog/_parser.py:170-172`) の `_DOWNLD_RE` は `DownLd\(` のみにマッチし、`DownLd_new(...)` 呼び出しを取りこぼす。影響を受けるデータセット:
+
+| コード | ページ | DownLd( 数 | DownLd_new 数 | 現カタログ収録 |
+|---|---|---|---|---|
+| L02-2025 (地価調査) | `KsjTmplt-L02-2025.html` | 0 | 2,073 | 0 files (versions=[]) |
+| A16-2020 (密集市街地) | `KsjTmplt-A16-2020.html` | 612 | 8 | 2020 年は 48 files (DownLd_new 由来の 8 件だけ漏れ) |
+
+引数順は `DownLd` と同じ `(size, filename, rel_path)` で、regex を `DownLd(?:_new)?\(` に緩めれば両方拾える (実装確認済み、巻き戻し保留中)。
+
+**未確定の論点**:
+
+1. **公式配布ステータス**: L02 / A16 は KSJ トップのカード一覧には載っていないが、`<ul class="collapsible">` パネル (「国土」「政策区域」カテゴリの折りたたみ内) に `<li class="collection-item">` として配置されている。KSJ としての公式配布扱いか、過去アーカイブかをサイト側の位置付けで確認する必要がある。同じ collapsible 内にある A13 (森林地域) 等は現行カタログに登録済みで、構造自体は正規
+2. **他の DownLd 変種の有無**: `DownLd_new` だけか、`DownLd_foo` のような別変種が他ページに無いか、`data/html_cache/` 全体で onclick の関数名を列挙して確認すべき
+3. **カタログ YAML の差分サイズ**: 拾うようにすると YAML が +2,078 URL で膨らむ。コミット粒度・レビュー負荷を踏まえた取り込み方針 (一括 or 段階的、L02 のみ先行 等)
+
+**調査手順 (案)**:
+```bash
+# onclick の関数名を全列挙
+uv run python -c "
+from pathlib import Path
+import re
+names = set()
+for p in Path('data/html_cache').rglob('KsjTmplt-*.html'):
+    for m in re.finditer(r\"onclick=['\\\"][^'\\\"]*?([A-Za-z_][A-Za-z0-9_]*)\\(\", p.read_text(encoding='utf-8', errors='replace')):
+        names.add(m.group(1))
+print(sorted(names))
+"
+
+# KSJ サイト側の L02 / A16 の位置付けを公式ページで目視確認
+# → 確認結果をこの roadmap に追記
+```
+
+**暫定対応状況**:
+- 2026-04-18 時点で実装修正は巻き戻し済み (`src/ksj/catalog/_parser.py` / `tests/test_parser.py` / `catalog/datasets.yaml` は元の状態)
+- 本調査が終わってから、regex 修正 + テスト追加 + `ksj catalog refresh --only L02 --only A16` を正式に適用する
+
+---
+
 ## MVP 対象データセット
 
 scope / CRS / format の組み合わせ網羅を目的に以下 5 件を MVP 対象とする:
