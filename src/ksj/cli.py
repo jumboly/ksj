@@ -452,6 +452,8 @@ def _plans_from_catalog(
     *,
     format_preference: list[str] | None,
     crs_filter: int | None,
+    scope_filter: list[str] | None,
+    prefer_national: bool,
     dest_root: Path,
 ) -> list[_DownloadPlan]:
     dataset = catalog.datasets.get(code)
@@ -464,12 +466,17 @@ def _plans_from_catalog(
         raise typer.Exit(code=1)
 
     entries = pick_targets(
-        dataset, year, format_preference=format_preference, crs_filter=crs_filter
+        dataset,
+        year,
+        format_preference=format_preference,
+        crs_filter=crs_filter,
+        scope_filter=scope_filter,
+        prefer_national=prefer_national,
     )
     if not entries:
         err_console.print(
             f"[red]{code}/{year} で条件にマッチするファイルがありません[/red]"
-            " (--crs / --format-preference を確認してください)"
+            " (--crs / --format-preference / --scope を確認してください)"
         )
         raise typer.Exit(code=1)
 
@@ -521,19 +528,43 @@ def download(
         int | None,
         typer.Option("--crs", help="指定 EPSG コードのエントリのみ取得 (例: 6668)。"),
     ] = None,
+    scope: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--scope",
+            help="指定 scope のみ取得 (複数指定可。例: --scope national --scope region)。"
+            " 語彙は catalog schema の Scope と同じ (national / prefecture / mesh1..6 等)。",
+        ),
+    ] = None,
+    prefer_national: Annotated[
+        bool,
+        typer.Option(
+            "--prefer-national",
+            help="national scope があれば national のみ取得、無ければ全 scope を取得する"
+            " (integrate の national 優先戦略と同等)。--scope と同時指定不可。",
+        ),
+    ] = False,
     data_dir: Annotated[Path, typer.Option("--data-dir", help="データ格納ルート。")] = Path("data"),
     parallel: Annotated[int, typer.Option("--parallel", help="ホスト別の同時接続数。")] = 2,
     rate: Annotated[float, typer.Option("--rate", help="ホスト別の秒間リクエスト上限。")] = 1.0,
 ) -> None:
     """カタログに記載された URL を並列ダウンロードする (Range レジューム対応)。"""
 
+    if scope and prefer_national:
+        err_console.print("[red]--scope と --prefer-national は同時指定できません[/red]")
+        raise typer.Exit(code=1)
+
     catalog = _load_or_exit()
+    # typer は --scope 未指定時に空 list を返す版と None を返す版があるので両方を
+    # selector 側の「None=無効」シグネチャに揃える
     plans = _plans_from_catalog(
         catalog,
         code,
         year,
         format_preference=_parse_format_preference(format_preference),
         crs_filter=crs,
+        scope_filter=scope or None,
+        prefer_national=prefer_national,
         dest_root=_raw_dir(data_dir, code, year),
     )
     targets = [p.target for p in plans]

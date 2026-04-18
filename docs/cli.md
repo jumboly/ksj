@@ -49,12 +49,17 @@ ksj html list [--cache-dir PATH]
 ksj download <code> --year YYYY
              [--format-preference shp,gml,geojson]
              [--crs EPSG_CODE]
+             [--scope VALUE] [--prefer-national]
              [--data-dir PATH]
              [--parallel N]
              [--rate LIMIT]
   指定データセット・年度の ZIP を取得する。並列・レート制限・Range レジューム対応。
   - --format-preference : 複数形式が並列配布されているとき選ぶ優先順
   - --crs EPSG_CODE     : 年度内で複数測地系がある場合のフィルタ
+  - --scope VALUE       : 指定 scope のみ取得 (複数指定可。例: --scope national --scope region)。
+                          語彙は catalog schema の Scope と同じ (national / prefecture / mesh1..6 等)
+  - --prefer-national   : national があれば national のみ、無ければ全 scope を取得
+                          (integrate の national 優先戦略と同等)。--scope と同時指定不可
 
 ksj ingest-local <code> --year YYYY --from PATH
   既存のローカル ZIP を取り込む (オフラインテストや別経路で取得したデータ用)。

@@ -18,15 +18,23 @@ def pick_targets(
     *,
     format_preference: Sequence[str] | None = None,
     crs_filter: int | None = None,
+    scope_filter: Sequence[str] | None = None,
+    prefer_national: bool = False,
 ) -> list[FileEntry]:
     """version の files から DL 対象を決める。
 
     - `crs_filter` 指定時は EPSG 完全一致のみ残す (HTML の CRS 正規化済み値に対して)
+    - `scope_filter` 指定時は指定 scope のみ残す (union 条件)
+    - `prefer_national` が True のとき、national scope があれば national のみ残し、
+      無ければ全 scope を返す (integrate の national 優先戦略と同等)
     - `format_preference` 未指定時はフィルタせず全件返す
     - `format_preference` 指定時は (scope, scope_identifier) をキーに重複を畳む。
       プリファレンス順に最初にマッチしたものを残し、どれもマッチしなければ
       そのキーの候補のうち元々の並び順で最初の 1 件を残す (脱落を避けるため)
     """
+    if scope_filter is not None and prefer_national:
+        raise ValueError("scope_filter と prefer_national は同時指定できません")
+
     version = dataset.versions.get(year)
     if version is None:
         return []
@@ -35,6 +43,14 @@ def pick_targets(
 
     if crs_filter is not None:
         entries = [f for f in entries if f.crs == crs_filter]
+
+    if prefer_national:
+        nationals = [f for f in entries if f.scope == "national"]
+        if nationals:
+            entries = nationals
+    elif scope_filter is not None:
+        allowed = set(scope_filter)
+        entries = [f for f in entries if f.scope in allowed]
 
     if format_preference is None:
         return entries

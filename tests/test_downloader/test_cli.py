@@ -120,6 +120,30 @@ def test_download_unknown_year(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert result.exit_code == 1
 
 
+def test_download_scope_and_prefer_national_are_mutually_exclusive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fixture_catalog(tmp_path, monkeypatch)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "download",
+            "N03",
+            "--year",
+            "2025",
+            "--scope",
+            "national",
+            "--prefer-national",
+            "--data-dir",
+            str(tmp_path / "data"),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "同時指定できません" in result.output
+
+
 def test_ingest_local_single_zip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _install_fixture_catalog(tmp_path, monkeypatch)
 
