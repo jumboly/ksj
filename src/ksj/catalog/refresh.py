@@ -12,12 +12,10 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import urlparse
 
 import httpx
 import yaml
@@ -30,6 +28,7 @@ from tenacity import (
 )
 
 from ksj import html_cache
+from ksj._http import RETRYABLE_HTTP, HostRateLimiter, build_default_limiters, host_from_url
 from ksj.catalog._parser import (
     IndexEntry,
     ParsedDetailPage,
@@ -62,34 +61,10 @@ class RefreshSummary:
 # ---- HTTP レイヤ ------------------------------------------------------------
 
 
-class _HostRateLimiter:
-    """1 ホストあたりの「同時接続数」と「秒間リクエスト数」を制御する。"""
-
-    def __init__(self, parallel: int, rate_per_sec: float) -> None:
-        self._semaphore = asyncio.Semaphore(parallel)
-        self._min_interval = 1.0 / rate_per_sec if rate_per_sec > 0 else 0.0
-        self._last_ts = 0.0
-        self._lock = asyncio.Lock()
-
-    async def acquire(self) -> None:
-        await self._semaphore.acquire()
-        async with self._lock:
-            delta = time.monotonic() - self._last_ts
-            if delta < self._min_interval:
-                await asyncio.sleep(self._min_interval - delta)
-            self._last_ts = time.monotonic()
-
-    def release(self) -> None:
-        self._semaphore.release()
-
-
-_RETRYABLE_HTTP = (httpx.TransportError, httpx.ReadTimeout)
-
-
 async def _fetch(
     client: httpx.AsyncClient,
     url: str,
-    limiters: dict[str, _HostRateLimiter],
+    limiters: dict[str, HostRateLimiter],
     *,
     cache_dir: Path | None = None,
     cache_policy: CachePolicy = CachePolicy.READ_WRITE,
@@ -102,7 +77,7 @@ async def _fetch(
         if cached is not None:
             return cached
 
-    host = urlparse(url).hostname or ""
+    host = host_from_url(url)
     limiter = limiters.get(host)
     if limiter is None:
         raise RuntimeError(f"host {host} は許可リストに無い ({url})")
@@ -110,7 +85,7 @@ async def _fetch(
     async for attempt in AsyncRetrying(
         stop=stop_after_attempt(4),
         wait=wait_exponential(multiplier=1.0, min=1.0, max=10.0),
-        retry=retry_if_exception_type((*_RETRYABLE_HTTP, httpx.HTTPStatusError)),
+        retry=retry_if_exception_type((*RETRYABLE_HTTP, httpx.HTTPStatusError)),
         reraise=True,
     ):
         with attempt:
@@ -244,10 +219,7 @@ async def refresh_catalog(
     """
     base_catalog: Catalog | None = _load_base(base_catalog_path)
 
-    limiters = {
-        "nlftp.mlit.go.jp": _HostRateLimiter(parallel=parallel, rate_per_sec=rate_per_sec),
-        "www.gsi.go.jp": _HostRateLimiter(parallel=parallel, rate_per_sec=rate_per_sec),
-    }
+    limiters = build_default_limiters(parallel=parallel, rate_per_sec=rate_per_sec)
 
     async with httpx.AsyncClient(
         timeout=http_timeout, headers={"User-Agent": "ksj-tool/0.1"}
@@ -336,7 +308,7 @@ async def refresh_catalog(
 async def _fetch_detail_safely(
     client: httpx.AsyncClient,
     entry: IndexEntry,
-    limiters: dict[str, _HostRateLimiter],
+    limiters: dict[str, HostRateLimiter],
     *,
     cache_dir: Path | None = None,
     cache_policy: CachePolicy = CachePolicy.READ_WRITE,

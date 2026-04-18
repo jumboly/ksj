@@ -1,11 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.table import Table
 
 from ksj import __version__, html_cache
@@ -17,6 +28,17 @@ from ksj.catalog.refresh import (
     refresh_catalog,
     save_catalog,
 )
+from ksj.downloader import (
+    DownloadResult,
+    DownloadTarget,
+    ManifestEntry,
+    download_many,
+    filename_from_url,
+    load_manifest,
+    pick_targets,
+    save_manifest,
+)
+from ksj.downloader.manifest import LOCAL_URL_PREFIX
 from ksj.html_cache import CachePolicy
 
 app = typer.Typer(
@@ -369,3 +391,235 @@ def html_list(
     console.print(
         f"[green]合計[/green]: {len(entries)} ファイル / {total_bytes / (1024 * 1024):.1f} MB"
     )
+
+
+# ---- download / ingest-local -----------------------------------------------
+
+
+def _raw_dir(data_dir: Path, code: str, year: str) -> Path:
+    return data_dir / "raw" / code / year
+
+
+def _parse_format_preference(value: str | None) -> list[str] | None:
+    if value is None:
+        return None
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+@dataclass(slots=True)
+class _DownloadPlan:
+    """DL ターゲットと manifest 書き込みに必要なカタログメタのペア。"""
+
+    target: DownloadTarget
+    scope: str
+    scope_identifier: str
+    format: str
+
+
+def _plans_from_catalog(
+    catalog: Catalog,
+    code: str,
+    year: str,
+    *,
+    format_preference: list[str] | None,
+    crs_filter: int | None,
+    dest_root: Path,
+) -> list[_DownloadPlan]:
+    dataset = catalog.datasets.get(code)
+    if dataset is None:
+        err_console.print(f"[red]データセット '{code}' はカタログに存在しません[/red]")
+        raise typer.Exit(code=1)
+    if year not in dataset.versions:
+        years = ", ".join(sorted(dataset.versions)) or "(登録なし)"
+        err_console.print(f"[red]{code} に年度 {year} は存在しません[/red]  利用可能年度: {years}")
+        raise typer.Exit(code=1)
+
+    entries = pick_targets(
+        dataset, year, format_preference=format_preference, crs_filter=crs_filter
+    )
+    if not entries:
+        err_console.print(
+            f"[red]{code}/{year} で条件にマッチするファイルがありません[/red]"
+            " (--crs / --format-preference を確認してください)"
+        )
+        raise typer.Exit(code=1)
+
+    return [
+        _DownloadPlan(
+            target=DownloadTarget(
+                url=f.url,
+                dest_path=dest_root / filename_from_url(f.url),
+                expected_size=f.size_bytes,
+            ),
+            scope=str(f.scope),
+            scope_identifier=f.scope_identifier,
+            format=str(f.format),
+        )
+        for f in entries
+    ]
+
+
+def _print_download_summary(results: list[DownloadResult]) -> None:
+    done = [r for r in results if r.ok and not r.skipped]
+    skipped = [r for r in results if r.skipped]
+    failed = [r for r in results if not r.ok]
+    total_bytes = sum(r.downloaded_bytes for r in done)
+    console.print(
+        f"[green]完了[/green]: 新規 {len(done)} / skip {len(skipped)} / 失敗 {len(failed)}"
+        f"  (転送 {total_bytes / (1024 * 1024):.1f} MB)"
+    )
+    if failed:
+        console.print("[yellow]失敗ファイル (再実行で再試行可能):[/yellow]")
+        for r in failed[:10]:
+            console.print(f"  {r.url} — {r.error}")
+        if len(failed) > 10:
+            console.print(f"  ...他 {len(failed) - 10} 件")
+
+
+@app.command()
+def download(
+    code: Annotated[str, typer.Argument(help="データセットコード (例: N03)。")],
+    year: Annotated[str, typer.Option("--year", help="取得対象年度 (例: 2025)。")],
+    format_preference: Annotated[
+        str | None,
+        typer.Option(
+            "--format-preference",
+            help="複数形式が配布されている場合の優先順をカンマ区切りで指定"
+            " (例: 'shp,geojson')。未指定なら全件取得。",
+        ),
+    ] = None,
+    crs: Annotated[
+        int | None,
+        typer.Option("--crs", help="指定 EPSG コードのエントリのみ取得 (例: 6668)。"),
+    ] = None,
+    data_dir: Annotated[Path, typer.Option("--data-dir", help="データ格納ルート。")] = Path("data"),
+    parallel: Annotated[int, typer.Option("--parallel", help="ホスト別の同時接続数。")] = 2,
+    rate: Annotated[float, typer.Option("--rate", help="ホスト別の秒間リクエスト上限。")] = 1.0,
+) -> None:
+    """カタログに記載された URL を並列ダウンロードする (Range レジューム対応)。"""
+
+    catalog = _load_or_exit()
+    plans = _plans_from_catalog(
+        catalog,
+        code,
+        year,
+        format_preference=_parse_format_preference(format_preference),
+        crs_filter=crs,
+        dest_root=_raw_dir(data_dir, code, year),
+    )
+    targets = [p.target for p in plans]
+
+    console.print(
+        f"[cyan]{code}/{year}[/cyan] の {len(targets)} ファイルをダウンロードします"
+        f" (parallel={parallel}, rate={rate}/s)"
+    )
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[cyan]ダウンロード中[/cyan]"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TextColumn("files"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=False,
+    ) as progress:
+        task_id = progress.add_task("download", total=len(targets))
+
+        def _advance(_: DownloadResult) -> None:
+            progress.advance(task_id)
+
+        results = asyncio.run(
+            download_many(
+                targets,
+                parallel=parallel,
+                rate_per_sec=rate,
+                on_file_done=_advance,
+            )
+        )
+
+    manifest = load_manifest(data_dir)
+    previous = {e.url: e for e in manifest.get_entries(code, year)}
+    plan_by_url = {p.target.url: p for p in plans}
+    now = datetime.now(UTC).replace(microsecond=0)
+    merged: dict[str, ManifestEntry] = dict(previous)
+    for result in results:
+        if not result.ok:
+            continue
+        plan = plan_by_url[result.url]
+        # skip は「前回取得した状態のまま」なので downloaded_at を更新しない
+        downloaded_at = (
+            previous[result.url].downloaded_at
+            if (result.skipped and result.url in previous)
+            else now
+        )
+        merged[result.url] = ManifestEntry(
+            url=result.url,
+            path=str(result.path.relative_to(data_dir)),
+            size_bytes=result.path.stat().st_size,
+            downloaded_at=downloaded_at,
+            scope=plan.scope,
+            scope_identifier=plan.scope_identifier,
+            format=plan.format,
+        )
+
+    manifest.set_entries(code, year, list(merged.values()))
+    save_manifest(manifest, data_dir)
+
+    _print_download_summary(results)
+    if all(not r.ok for r in results):
+        raise typer.Exit(code=1)
+
+
+@app.command("ingest-local")
+def ingest_local(
+    code: Annotated[str, typer.Argument(help="データセットコード (例: N03)。")],
+    year: Annotated[str, typer.Option("--year", help="対象年度 (例: 2024)。")],
+    source: Annotated[
+        Path,
+        typer.Option(
+            "--from",
+            help="取り込む ZIP ファイル、もしくは ZIP が入ったディレクトリ。",
+        ),
+    ],
+    data_dir: Annotated[Path, typer.Option("--data-dir", help="データ格納ルート。")] = Path("data"),
+) -> None:
+    """ローカル ZIP を `data/raw/<code>/<year>/` に取り込む。"""
+
+    if not source.exists():
+        err_console.print(f"[red]--from で指定されたパスが見つかりません: {source}[/red]")
+        raise typer.Exit(code=1)
+
+    if source.is_dir():
+        zips = sorted(p for p in source.iterdir() if p.is_file() and p.suffix.lower() == ".zip")
+    else:
+        zips = [source]
+    if not zips:
+        err_console.print(f"[red]ZIP が見つかりません: {source}[/red]")
+        raise typer.Exit(code=1)
+
+    dest_root = _raw_dir(data_dir, code, year)
+    dest_root.mkdir(parents=True, exist_ok=True)
+
+    manifest = load_manifest(data_dir)
+    existing = {e.url: e for e in manifest.get_entries(code, year)}
+    now = datetime.now(UTC).replace(microsecond=0)
+    copied: list[Path] = []
+    for zip_path in zips:
+        dest = dest_root / zip_path.name
+        shutil.copy2(zip_path, dest)
+        pseudo_url = f"{LOCAL_URL_PREFIX}{zip_path.resolve()}"
+        existing[pseudo_url] = ManifestEntry(
+            url=pseudo_url,
+            path=str(dest.relative_to(data_dir)),
+            size_bytes=dest.stat().st_size,
+            downloaded_at=now,
+        )
+        copied.append(dest)
+
+    manifest.set_entries(code, year, list(existing.values()))
+    save_manifest(manifest, data_dir)
+
+    console.print(f"[green]取り込み完了[/green]: {len(copied)} ファイル → {dest_root}")
+    for dest in copied:
+        console.print(f"  {dest.relative_to(data_dir)}")

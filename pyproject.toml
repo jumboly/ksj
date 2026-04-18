@@ -73,3 +73,4 @@ warn_redundant_casts = true
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
 pythonpath = ["src"]
+asyncio_mode = "auto"
