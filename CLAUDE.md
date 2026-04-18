@@ -18,8 +18,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | Phase 3: ダウンローダ (download / ingest-local) | ✅ 完了 |
 | Phase 4: 統合パイプライン (national のみ) | ✅ 完了 |
 | Phase 5: 分割統合 (prefecture / mesh / urban_area / regional_bureau) | ✅ 完了 |
-| Phase 6: GeoParquet + convert | 未着手 |
-| Phase 7: MVP 5 データセット E2E + ドキュメント | 未着手 |
+| Phase 6: GeoParquet + convert | ✅ 完了 |
+| Phase 7: MVP 5 データセット E2E + ドキュメント | ✅ 完了 |
 
 **更新ルール**: Claude は各フェーズ開始時に該当行を「🔧 作業中」に、完了（ユーザー動作確認 OK）で「✅ 完了」に更新する。先取りで複数行を進めない。
 

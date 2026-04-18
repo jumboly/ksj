@@ -6,16 +6,15 @@
 
 1. **カタログ解決**: `catalog/datasets.yaml` から `<code>/<year>` の `files[]` を取得
 2. **ダウンロード補填**: `data/raw/<code>/<year>/` に全分割が揃っているか確認。Phase 5 時点では自動ダウンロードは行わず、不足があれば `DownloadRequiredError` で `ksj download` を促す (フェーズ境界での副作用発生を避けるため)。`--allow-partial` を指定すれば未取得ソースをスキップして続行できる
-3. **読込**: 各分割を `pyogrio.read_dataframe` で読込 (エンコーディングは `cchardet` + フォールバックで自動判定)
+3. **読込**: 各分割を `pyogrio.read_dataframe` で読込 (エンコーディングは format ベースで決定: Shapefile は cp932 既定、GML/GeoJSON は pyogrio デフォルト。`FileEntry.encoding` で手動 override 可)
 4. **UTF-8 正規化**: 文字列カラムを UTF-8 へ (内部表現は Python `str`)
 5. **CRS 変換**: `pyproj` で `--target-crs` へ再投影
 6. **スキーマ統一**: 全分割のカラムの和集合を取り、欠損は NaN、型は最広義に揃える
 7. **欠損値正規化**: カタログ `null_values` で宣言された値を NaN に変換
 8. **結合**: `pyarrow.concat_tables` / `GeoDataFrame.pd.concat` で結合
 9. **出力**:
-   - `.gpkg`: `pyogrio.write_dataframe` で 1 レイヤに出力、`gpkg_metadata_reference` テーブルに出典 JSON を埋込
+   - `.gpkg`: `pyogrio.write_dataframe` で 1 レイヤに出力、`gpkg_metadata` テーブルに出典 JSON を埋込
    - `.parquet`: GeoParquet 1.1 仕様、`geo` メタデータ + `ksj_metadata` キーで出典・生成日・元 URL・target_crs を記録
-10. **マニフェスト生成**: `data/integrated/<code>-<year>.manifest.json` を並列に生成 (ファイル外でも出典情報を参照可能に)
 
 ## ソース選択アルゴリズム
 
@@ -122,8 +121,6 @@ GeoPackage と GeoParquet の両方に以下を埋め込む:
 
 - GeoPackage: `gpkg_metadata` テーブル (MIME `application/json`)
 - GeoParquet: `key_value_metadata` の `ksj_metadata` キー
-
-加えて `data/integrated/<code>-<year>.manifest.json` に同内容を出力。
 
 ## ラスタデータ
 

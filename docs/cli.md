@@ -18,13 +18,29 @@ ksj info <code>
 
 ```
 ksj catalog refresh [--only <code>] [--parallel 2] [--rate 1]
+                    [--dry-run] [--no-cache] [--cache-dir PATH]
   KSJ サイトをスクレイピングしてカタログ YAML を再生成する。
-  - --only <code> : 単一データセットのみ更新
+  - --only <code> : 単一データセットのみ更新 (複数指定可)
   - --parallel N  : 同時接続数 (デフォルト 2)
   - --rate N      : 秒間リクエスト数の上限 (デフォルト 1)
+  - --dry-run     : YAML を上書きせずサマリのみ表示
+  - --no-cache    : HTML キャッシュを無視して再取得 (取得結果はキャッシュに上書き)
+  - --cache-dir   : HTML キャッシュディレクトリ (デフォルト data/html_cache)
 
 ksj catalog diff
   現在のカタログ YAML と再スクレイプ結果の差分を表示する (コミット前レビュー用)。
+```
+
+### HTML キャッシュ管理 (補助)
+
+```
+ksj html fetch [--only <code>] [--parallel 2] [--rate 1] [--force] [--cache-dir PATH]
+  KSJ サイトの HTML を cache_dir に保存する (カタログ YAML は更新しない)。
+  catalog refresh は保存された HTML をそのまま使うので、初回実行後はオフライン
+  でカタログ再生成できる。
+
+ksj html list [--cache-dir PATH]
+  HTML キャッシュの内容を一覧表示する。
 ```
 
 ### ダウンロード
@@ -50,26 +66,32 @@ ksj ingest-local <code> --year YYYY --from PATH
 ksj integrate <code> --year YYYY
               [--target-crs EPSG:6668]
               [--format gpkg|parquet]
-              [--format-preference shp,gml]
-              [--strict-year]
-              [--out PATH]
+              [--format-preference gml,shp,geojson]
+              [--strict-year] [--allow-partial]
+              [--data-dir PATH] [--out PATH]
   分割データを結合し CRS 統一・属性正規化して出力する。
-  - --target-crs      : 統合後の CRS (デフォルト EPSG:6668 = JGD2011)
-  - --format          : 出力形式 (デフォルト gpkg)
-  - --format-preference: 入力形式の優先順
-  - --strict-year     : 対象年度に完全一致する識別子のみ採用。デフォルトは最新補填あり
-                        (例: 本州 46 県 2018、沖縄のみ 2015 も取り込む)
+  - --target-crs       : 統合後の CRS (デフォルト EPSG:6668 = JGD2011)
+  - --format           : 出力形式 (デフォルト gpkg)
+  - --format-preference: ZIP 内に複数形式が同梱されているとき採用する優先順 (デフォルトは gml > shp > geojson)
+  - --strict-year      : 対象年度に完全一致する識別子のみ採用。デフォルトは最新補填あり
+                         (例: 本州 46 県 2018、沖縄のみ 2015 も取り込む)
+  - --allow-partial    : manifest に無いソースをスキップして続行する (警告のみ)
+  - --data-dir         : データ格納ルート (デフォルト ./data)
+  - --out              : 出力先パス (デフォルト data_dir/integrated/{code}-{year}.{ext})
 
 ksj convert <input> --format gpkg|parquet [--out PATH]
-  統合済みファイルの形式を変換する (GeoPackage ⇄ GeoParquet)。
+  統合済みファイルの形式を変換する (GeoPackage ⇄ GeoParquet)。メタデータは保全される。
+  入力と同じ形式を指定するとエラーになる。
 ```
 
-## グローバルオプション
+## 補助コマンド
 
 ```
---data-dir PATH        データ格納ルート (デフォルト ./data)
---help / -h           ヘルプ表示
+ksj version       バージョン番号を表示
+ksj --help        ヘルプ表示 (各サブコマンドにも --help あり)
 ```
+
+`--data-dir` はサブコマンドごとのオプションとして提供 (CLI レベルのグローバル ではない)。`download` / `ingest-local` / `integrate` の各コマンドで指定可能。
 
 ## ディレクトリ規約
 
@@ -82,11 +104,12 @@ ksj convert <input> --format gpkg|parquet [--out PATH]
 ├── src/ksj/                    実装
 ├── tests/                      テスト
 ├── catalog/
-│   ├── datasets.yaml           スクレイプ結果のスナップショット
-│   └── .refresh_state.json     refresh 中断時の再開用状態
+│   └── datasets.yaml           スクレイプ結果のスナップショット
 └── data/                       (gitignore)
     ├── raw/<code>/<year>/*.zip
-    ├── extracted/<code>/<year>/...
     ├── integrated/<code>-<year>.gpkg
+    ├── html_cache/             KSJ 詳細ページのキャッシュ
     └── manifest.json           取得 URL・サイズ・取得日時の記録
 ```
+
+reader は ZIP を `vsizip://` で直接読むため、展開済みファイルを置く中間ディレクトリ (extracted/) は持たない。
