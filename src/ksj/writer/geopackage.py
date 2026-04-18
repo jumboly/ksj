@@ -15,7 +15,7 @@ from typing import Any
 
 import pyogrio
 
-from ksj.reader import VectorLayer
+from ksj.reader.vector import VectorLayer
 
 # OGC GeoPackage Metadata Extension v1.4 で定義されるカラム値。
 # https://www.geopackage.org/spec/#extension_metadata

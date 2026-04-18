@@ -16,6 +16,21 @@ import pytest
 
 
 @pytest.fixture
+def make_vector_layer() -> Callable[..., Any]:
+    """VectorLayer を最小情報 (name, gdf) から組み立てるファクトリ。
+
+    writer / reader テストで毎ファイル同じ定義を書いていた _layer ヘルパを
+    conftest に集約する。format はテスト上無視されるので固定値で良い。
+    """
+    from ksj.reader.vector import VectorLayer
+
+    def _factory(name: str, gdf: Any, *, format: str = "shp") -> Any:
+        return VectorLayer(layer_name=name, source_path=Path(name), format=format, gdf=gdf)
+
+    return _factory
+
+
+@pytest.fixture
 def tiny_geodataframe() -> Any:
     """4 ポイントの最小 GeoDataFrame (CRS=EPSG:6668)。"""
     import geopandas as gpd

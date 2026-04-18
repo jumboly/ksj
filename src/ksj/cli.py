@@ -50,7 +50,8 @@ from ksj.integrator import (
 from ksj.integrator import (
     integrate as integrate_dataset,
 )
-from ksj.reader import NoMatchingFormatError
+from ksj.reader import NoMatchingFormatError, UnsupportedIntegratedFormatError, read_integrated
+from ksj.writer import OutputFormat, resolve_extension, write
 
 app = typer.Typer(
     name="ksj",
@@ -690,8 +691,23 @@ def integrate(
             help="manifest に無いソースをスキップして続行する (警告のみ)。",
         ),
     ] = False,
+    output_format: Annotated[
+        OutputFormat,
+        typer.Option(
+            "--format",
+            case_sensitive=False,
+            help="出力形式。gpkg (GeoPackage) / parquet (GeoParquet 1.1)。",
+        ),
+    ] = OutputFormat.GPKG,
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            "--out",
+            help="出力先パス。省略時は data_dir/integrated/{code}-{year}.{ext}。",
+        ),
+    ] = None,
 ) -> None:
-    """national / prefecture / mesh / urban_area / regional_bureau を 1 本の GeoPackage に統合する。
+    """national / prefecture / mesh / urban_area / regional_bureau を GeoPackage / GeoParquet に統合する。
 
     national があれば national 1 本で終了。無ければ scope + 識別子ごとに
     「対象年度以前で最新」を 1 件ずつ採用して union する (latest-fill)。
@@ -702,7 +718,8 @@ def integrate(
     catalog = _load_or_exit()
     try:
         with console.status(
-            f"[cyan]{code}/{year} を統合中... (CRS={target_crs})[/cyan]", spinner="dots"
+            f"[cyan]{code}/{year} を統合中... (CRS={target_crs}, format={output_format})[/cyan]",
+            spinner="dots",
         ):
             result = integrate_dataset(
                 catalog,
@@ -713,6 +730,8 @@ def integrate(
                 format_preference=_parse_format_preference(format_preference),
                 strict_year=strict_year,
                 allow_partial=allow_partial,
+                output_format=output_format,
+                output_path=out,
             )
     except (
         KeyError,
@@ -724,6 +743,7 @@ def integrate(
         raise typer.Exit(code=1) from exc
 
     console.print(f"[green]統合完了[/green]: {result.output_path}")
+    console.print(f"  format     : {output_format}")
     console.print(f"  strategy   : {result.strategy} (sources={result.source_count})")
     console.print(f"  target CRS : {result.target_crs} (converted={result.crs_converted})")
     console.print(f"  layers     : {', '.join(result.layer_names)}")
@@ -731,3 +751,70 @@ def integrate(
         console.print(f"  source ZIP : {result.source_zips[0]}")
     else:
         console.print(f"  source ZIPs: {len(result.source_zips)} files")
+
+
+# ---- convert ---------------------------------------------------------------
+
+
+@app.command()
+def convert(
+    source: Annotated[
+        Path,
+        typer.Argument(
+            help="統合済みファイル (.gpkg または .parquet)。",
+            exists=True,
+            dir_okay=False,
+            file_okay=True,
+            readable=True,
+        ),
+    ],
+    output_format: Annotated[
+        OutputFormat,
+        typer.Option(
+            "--format",
+            case_sensitive=False,
+            help="変換先の形式 (gpkg / parquet)。入力と同形式を指定するとエラー。",
+        ),
+    ],
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            "--out",
+            help="出力先パス。省略時は入力と同じディレクトリに拡張子違いで作る。",
+        ),
+    ] = None,
+) -> None:
+    """統合済みファイルを GeoPackage ⇄ GeoParquet で変換する (メタデータは保全)。"""
+
+    try:
+        layers, metadata = read_integrated(source)
+    except UnsupportedIntegratedFormatError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    # layers[0].format は reader 側で "gpkg"/"parquet" が設定される。出力と同形式なら
+    # 変換不要のため early-return (大文字拡張子や --out 経由で同一パスになる罠も封じる)。
+    input_format = OutputFormat(layers[0].format)
+    if input_format is output_format:
+        err_console.print(
+            f"[red]入力 ({input_format}) と同形式への変換は無意味です: {source}[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    if not metadata:
+        console.print(
+            "[yellow]警告[/yellow]: 入力ファイルに埋め込みメタデータがありませんでした。"
+            " 空のメタデータで変換を続行します。"
+        )
+
+    dest = out or source.with_suffix(f".{resolve_extension(output_format)}")
+
+    try:
+        write(layers, dest, metadata=metadata, format=output_format)
+    except ValueError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"[green]変換完了[/green]: {source} → {dest}")
+    console.print(f"  format     : {output_format}")
+    console.print(f"  layers     : {', '.join(layer.layer_name for layer in layers)}")

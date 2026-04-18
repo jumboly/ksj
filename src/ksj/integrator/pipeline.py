@@ -27,7 +27,7 @@ from ksj.integrator.source_selector import (
     select_sources,
 )
 from ksj.reader import VectorLayer, default_encoding_for, read_zip
-from ksj.writer import write_layers
+from ksj.writer import OutputFormat, resolve_extension, write
 
 DEFAULT_TARGET_CRS = "EPSG:6668"
 
@@ -80,16 +80,20 @@ def integrate(
     format_preference: Iterable[str] | None = None,
     strict_year: bool = False,
     allow_partial: bool = False,
+    output_format: OutputFormat | str = OutputFormat.GPKG,
+    output_path: Path | None = None,
 ) -> IntegrateResult:
-    """``code``/``year`` を統合し GPKG を書き出す。"""
+    """``code``/``year`` を統合し GPKG / GeoParquet を書き出す。
+
+    ``output_format`` で gpkg / parquet を選択、``output_path`` は既定の
+    ``data_dir/integrated/{code}-{year}.{ext}`` を上書きしたいときに指定する。
+    """
     dataset = catalog.datasets.get(code)
     if dataset is None:
         raise KeyError(f"データセット '{code}' はカタログに存在しない")
 
     prefs_list = list(format_preference) if format_preference is not None else None
-    plan = select_sources(
-        dataset, year, strict_year=strict_year, format_preference=prefs_list
-    )
+    plan = select_sources(dataset, year, strict_year=strict_year, format_preference=prefs_list)
     target = pyproj.CRS.from_user_input(target_crs)
 
     manifest = load_manifest(data_dir)
@@ -136,11 +140,13 @@ def integrate(
         extra_notes=loaded.skipped_notes,
     )
 
-    output_path = data_dir / "integrated" / f"{code}-{year}.gpkg"
-    write_layers(final_layers, output_path, metadata=metadata)
+    dest = output_path or (
+        data_dir / "integrated" / f"{code}-{year}.{resolve_extension(output_format)}"
+    )
+    write(final_layers, dest, metadata=metadata, format=output_format)
 
     return IntegrateResult(
-        output_path=output_path,
+        output_path=dest,
         layer_names=[layer_name],
         source_zips=loaded.source_zips,
         target_crs=target_crs,
