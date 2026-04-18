@@ -40,6 +40,15 @@ from ksj.downloader import (
 )
 from ksj.downloader.manifest import LOCAL_URL_PREFIX
 from ksj.html_cache import CachePolicy
+from ksj.integrator import (
+    DEFAULT_TARGET_CRS,
+    DownloadRequiredError,
+    NoNationalSourceError,
+)
+from ksj.integrator import (
+    integrate as integrate_dataset,
+)
+from ksj.reader import NoMatchingFormatError
 
 app = typer.Typer(
     name="ksj",
@@ -623,3 +632,57 @@ def ingest_local(
     console.print(f"[green]取り込み完了[/green]: {len(copied)} ファイル → {dest_root}")
     for dest in copied:
         console.print(f"  {dest.relative_to(data_dir)}")
+
+
+# ---- integrate -------------------------------------------------------------
+
+
+@app.command()
+def integrate(
+    code: Annotated[str, typer.Argument(help="データセットコード (例: N03)。")],
+    year: Annotated[str, typer.Option("--year", help="対象年度 (例: 2025)。")],
+    target_crs: Annotated[
+        str,
+        typer.Option(
+            "--target-crs",
+            help="出力 CRS (EPSG コード等、pyproj が解釈する任意の表現)。",
+        ),
+    ] = DEFAULT_TARGET_CRS,
+    format_preference: Annotated[
+        str | None,
+        typer.Option(
+            "--format-preference",
+            help="ZIP 内に複数形式が同梱されているとき採用する優先順 (例: 'gml,shp,geojson')。"
+            " 省略時は KSJ の 1 次配布である GML を最優先する。",
+        ),
+    ] = None,
+    data_dir: Annotated[Path, typer.Option("--data-dir", help="データ格納ルート。")] = Path("data"),
+) -> None:
+    """national scope のファイルを 1 本に統合し GeoPackage へ書き出す (Phase 4)。"""
+
+    catalog = _load_or_exit()
+    try:
+        with console.status(
+            f"[cyan]{code}/{year} を統合中... (CRS={target_crs})[/cyan]", spinner="dots"
+        ):
+            result = integrate_dataset(
+                catalog,
+                code,
+                year,
+                data_dir=data_dir,
+                target_crs=target_crs,
+                format_preference=_parse_format_preference(format_preference),
+            )
+    except (
+        KeyError,
+        NoNationalSourceError,
+        DownloadRequiredError,
+        NoMatchingFormatError,
+    ) as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"[green]統合完了[/green]: {result.output_path}")
+    console.print(f"  source ZIP : {result.source_zip}")
+    console.print(f"  target CRS : {result.target_crs} (converted={result.crs_converted})")
+    console.print(f"  layers     : {', '.join(result.layer_names)}")

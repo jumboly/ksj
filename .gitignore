@@ -18,6 +18,9 @@ wheels/
 data/
 .scratch/
 
+# Claude Code session state
+.claude/
+
 # Editor
 .idea/
 .vscode/
