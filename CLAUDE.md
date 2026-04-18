@@ -14,7 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 |---|---|
 | Phase 0: プロジェクト土台 | ✅ 完了 |
 | Phase 1: カタログ雛形 + list/info | ✅ 完了 |
-| Phase 2: カタログスクレイパ (catalog refresh) | 🔧 作業中 |
+| Phase 2: カタログスクレイパ (catalog refresh) | ✅ 完了 |
 | Phase 3: ダウンローダ (download / ingest-local) | 未着手 |
 | Phase 4: 統合パイプライン (national のみ) | 未着手 |
 | Phase 5: 分割統合 (prefecture / mesh / urban_area / regional_bureau) | 未着手 |
