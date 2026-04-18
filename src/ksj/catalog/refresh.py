@@ -39,6 +39,7 @@ from ksj.catalog._parser import (
 )
 from ksj.catalog.loader import DEFAULT_CATALOG_PATH, load_catalog
 from ksj.catalog.schema import Catalog, Dataset, FileEntry, Version
+from ksj.html_cache import CachePolicy
 
 ProgressCallback = Callable[[str, str | None, int | None], None]
 
@@ -91,17 +92,12 @@ async def _fetch(
     limiters: dict[str, _HostRateLimiter],
     *,
     cache_dir: Path | None = None,
-    use_cache: bool = True,
-    update_cache: bool = True,
+    cache_policy: CachePolicy = CachePolicy.READ_WRITE,
 ) -> str:
-    """URL を取得する。キャッシュがあれば使用し、ネットワーク取得後は保存する。
-
-    - ``use_cache=True`` (デフォルト): キャッシュ上に HTML があればネットワークを叩かない
-    - ``use_cache=False``: 強制的にネットワークから取得
-    - ``update_cache=True`` (デフォルト): 取得成功時に ``cache_dir`` に保存
-    - ``cache_dir=None``: キャッシュ機能を無効化
-    """
-    if cache_dir is not None and use_cache:
+    """URL を取得する。``cache_policy`` によりキャッシュ読み/書きを制御する。"""
+    cache_active = cache_dir is not None and cache_policy is not CachePolicy.OFF
+    if cache_active and cache_policy in (CachePolicy.READ_ONLY, CachePolicy.READ_WRITE):
+        assert cache_dir is not None
         cached = html_cache.load(url, cache_dir)
         if cached is not None:
             return cached
@@ -126,7 +122,8 @@ async def _fetch(
                     resp.raise_for_status()
                 resp.raise_for_status()
                 html = resp.text
-                if cache_dir is not None and update_cache:
+                if cache_active and cache_policy is CachePolicy.READ_WRITE:
+                    assert cache_dir is not None
                     html_cache.save(url, html, cache_dir)
                 return html
             finally:
@@ -228,7 +225,7 @@ async def refresh_catalog(
     http_timeout: float = 30.0,
     progress_callback: (ProgressCallback | None) = None,
     cache_dir: Path | None = html_cache.DEFAULT_HTML_CACHE_DIR,
-    use_cache: bool = True,
+    cache_policy: CachePolicy = CachePolicy.READ_WRITE,
 ) -> tuple[Catalog, RefreshSummary]:
     """KSJ サイトを再スクレイプして新しい Catalog を返す。
 
@@ -252,7 +249,7 @@ async def refresh_catalog(
         if progress_callback is not None:
             progress_callback("index", None, None)
         index_html = await _fetch(
-            client, KSJ_INDEX_URL, limiters, cache_dir=cache_dir, use_cache=use_cache
+            client, KSJ_INDEX_URL, limiters, cache_dir=cache_dir, cache_policy=cache_policy
         )
         index_entries = parse_index_page(index_html, KSJ_INDEX_URL)
 
@@ -266,7 +263,7 @@ async def refresh_catalog(
             tasks.append(
                 asyncio.create_task(
                     _fetch_detail_safely(
-                        client, entry, limiters, cache_dir=cache_dir, use_cache=use_cache
+                        client, entry, limiters, cache_dir=cache_dir, cache_policy=cache_policy
                     )
                 )
             )
@@ -335,12 +332,12 @@ async def _fetch_detail_safely(
     limiters: dict[str, _HostRateLimiter],
     *,
     cache_dir: Path | None = None,
-    use_cache: bool = True,
+    cache_policy: CachePolicy = CachePolicy.READ_WRITE,
 ) -> tuple[IndexEntry, ParsedDetailPage | None, str | None]:
     """個別データセットの取得失敗を全体のクラッシュに伝播させない。"""
     try:
         html = await _fetch(
-            client, entry.detail_page, limiters, cache_dir=cache_dir, use_cache=use_cache
+            client, entry.detail_page, limiters, cache_dir=cache_dir, cache_policy=cache_policy
         )
         parsed = parse_detail_page(html, entry.detail_page, entry.code)
         return entry, parsed, None

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ksj.html_cache import cache_path, iter_cached, load, save, total_size
+from ksj.html_cache import cache_path, iter_cached, load, save, summary
 
 
 def test_cache_path_preserves_host_and_path(tmp_path: Path) -> None:
@@ -44,7 +44,20 @@ def test_iter_cached_lists_all(tmp_path: Path) -> None:
     ]
 
 
-def test_total_size_sums_bytes(tmp_path: Path) -> None:
+def test_summary_counts_and_sums(tmp_path: Path) -> None:
     save("https://a.example/p1.html", "ab", tmp_path)
     save("https://a.example/p2.html", "cde", tmp_path)
-    assert total_size(tmp_path) == 5
+    result = summary(tmp_path)
+    assert result.file_count == 2
+    assert result.total_bytes == 5
+
+
+def test_summary_empty_dir(tmp_path: Path) -> None:
+    result = summary(tmp_path)
+    assert result.file_count == 0
+    assert result.total_bytes == 0
+
+
+def test_summary_missing_dir(tmp_path: Path) -> None:
+    result = summary(tmp_path / "does-not-exist")
+    assert result.file_count == 0

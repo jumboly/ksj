@@ -12,10 +12,12 @@ from ksj import __version__, html_cache
 from ksj.catalog import Catalog, Dataset, load_catalog
 from ksj.catalog.loader import CatalogNotFoundError
 from ksj.catalog.refresh import (
+    RefreshSummary,
     diff_catalogs,
     refresh_catalog,
     save_catalog,
 )
+from ksj.html_cache import CachePolicy
 
 app = typer.Typer(
     name="ksj",
@@ -73,6 +75,39 @@ def _category_matches(dataset: Dataset, query: str | None) -> bool:
     if query is None:
         return True
     return dataset.category is not None and query in dataset.category
+
+
+def _run_refresh(
+    *,
+    only: list[str] | None,
+    parallel: int,
+    rate: float,
+    cache_dir: Path,
+    cache_policy: CachePolicy,
+    status_message: str,
+) -> tuple[Catalog, RefreshSummary]:
+    with console.status(f"[cyan]{status_message}[/cyan]", spinner="dots"):
+        return asyncio.run(
+            refresh_catalog(
+                only=only,
+                parallel=parallel,
+                rate_per_sec=rate,
+                cache_dir=cache_dir,
+                cache_policy=cache_policy,
+            )
+        )
+
+
+def _print_summary_warnings(summary: RefreshSummary) -> None:
+    if summary.unsupported:
+        console.print(
+            f"[yellow]フォームベース配布 (自動 URL 取得不可)[/yellow]: "
+            f"{', '.join(summary.unsupported)}"
+        )
+    if summary.warnings:
+        console.print(f"[yellow]{len(summary.warnings)} 件の警告[/yellow] (先頭 3 件のみ):")
+        for w in summary.warnings[:3]:
+            console.print(f"  {w}")
 
 
 @app.command("list")
@@ -215,31 +250,21 @@ def catalog_refresh(
     デフォルトでは HTML キャッシュを優先し、ネットワーク負荷を避ける。
     """
 
-    with console.status("[cyan]スクレイピング中...[/cyan]", spinner="dots"):
-        catalog, summary = asyncio.run(
-            refresh_catalog(
-                only=only,
-                parallel=parallel,
-                rate_per_sec=rate,
-                cache_dir=cache_dir,
-                use_cache=not no_cache,
-            )
-        )
+    catalog, summary = _run_refresh(
+        only=only,
+        parallel=parallel,
+        rate=rate,
+        cache_dir=cache_dir,
+        cache_policy=CachePolicy.OFF if no_cache else CachePolicy.READ_WRITE,
+        status_message="スクレイピング中...",
+    )
 
     console.print(
         f"[green]取得完了[/green]: {summary.total_datasets} データセット"
         f" (新規 {len(summary.added)} / 更新 {len(summary.updated)}"
         f" / 未変更保持 {len(summary.skipped)})"
     )
-    if summary.unsupported:
-        console.print(
-            f"[yellow]フォームベース配布 (自動 URL 取得不可)[/yellow]: "
-            f"{', '.join(summary.unsupported)}"
-        )
-    if summary.warnings:
-        console.print(f"[yellow]{len(summary.warnings)} 件の警告 (先頭 3 件のみ表示):[/yellow]")
-        for w in summary.warnings[:3]:
-            console.print(f"  {w}")
+    _print_summary_warnings(summary)
 
     if dry_run:
         console.print("[dim]--dry-run のためファイル書き出しはスキップ[/dim]")
@@ -304,26 +329,21 @@ def html_fetch(
     オフラインでカタログ再生成できる。
     """
 
-    with console.status("[cyan]HTML を取得中...[/cyan]", spinner="dots"):
-        _, summary = asyncio.run(
-            refresh_catalog(
-                only=only,
-                parallel=parallel,
-                rate_per_sec=rate,
-                cache_dir=cache_dir,
-                use_cache=not force,
-            )
-        )
+    _, summary = _run_refresh(
+        only=only,
+        parallel=parallel,
+        rate=rate,
+        cache_dir=cache_dir,
+        cache_policy=CachePolicy.OFF if force else CachePolicy.READ_WRITE,
+        status_message="HTML を取得中...",
+    )
 
-    size_mb = html_cache.total_size(cache_dir) / (1024 * 1024)
+    stats = html_cache.summary(cache_dir)
     console.print(
         f"[green]HTML キャッシュ更新[/green]: {cache_dir} "
-        f"(全 {sum(1 for _ in html_cache.iter_cached(cache_dir))} ファイル, {size_mb:.1f} MB)"
+        f"(全 {stats.file_count} ファイル, {stats.total_mb:.1f} MB)"
     )
-    if summary.warnings:
-        console.print(f"[yellow]{len(summary.warnings)} 件の警告[/yellow] (先頭 3 件のみ):")
-        for w in summary.warnings[:3]:
-            console.print(f"  {w}")
+    _print_summary_warnings(summary)
 
 
 @html_app.command("list")
@@ -345,12 +365,15 @@ def html_list(
     table.add_column("path", style="cyan", no_wrap=False)
     table.add_column("size", justify="right")
     table.add_column("modified")
+    total_bytes = 0
     for entry in entries:
+        total_bytes += entry.size_bytes
         table.add_row(
             str(entry.path.relative_to(cache_dir)),
             f"{entry.size_bytes / 1024:.1f} KB",
             entry.modified_at.strftime("%Y-%m-%d %H:%M"),
         )
     console.print(table)
-    total_mb = sum(e.size_bytes for e in entries) / (1024 * 1024)
-    console.print(f"[green]合計[/green]: {len(entries)} ファイル / {total_mb:.1f} MB")
+    console.print(
+        f"[green]合計[/green]: {len(entries)} ファイル / {total_bytes / (1024 * 1024):.1f} MB"
+    )

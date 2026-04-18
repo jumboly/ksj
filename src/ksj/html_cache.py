@@ -1,12 +1,7 @@
-"""KSJ サイトから取得した HTML をローカルキャッシュする。
+"""KSJ から取得した HTML を ``<base>/<host>/<path>`` の配置でローカルキャッシュする。
 
-目的:
-1. 反復的なカタログ refresh でサイトに負荷をかけない
-2. オフライン環境でもパーサ改修を回せる
-3. 取得タイムスタンプ/差分を保持してデバッグしやすく
-
-URL → キャッシュファイルパスは host + path をディレクトリ階層にマップするので、
-別ホスト (www.gsi.go.jp 等) 対応も自動。
+反復的な catalog refresh でネットワーク負荷を避け、オフラインでもパーサ改修を
+回すための透過キャッシュ。別ホスト (www.gsi.go.jp 等) 対応は host 階層で自動処理。
 """
 
 from __future__ import annotations
@@ -14,10 +9,19 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 from urllib.parse import urlparse
 
 DEFAULT_HTML_CACHE_DIR = Path("data/html_cache")
+
+
+class CachePolicy(Enum):
+    """キャッシュの読み/書きポリシー。"""
+
+    OFF = "off"  # キャッシュを全く使用しない (読まない・書かない)
+    READ_ONLY = "read_only"  # キャッシュから読むのみ (ネットワーク取得は書かない)
+    READ_WRITE = "read_write"  # 読み取り優先、ネットワーク取得分は書き込む
 
 
 @dataclass(slots=True)
@@ -28,6 +32,18 @@ class CachedEntry:
     path: Path
     size_bytes: int
     modified_at: datetime
+
+
+@dataclass(slots=True)
+class CacheSummary:
+    """キャッシュ全体の集計値。"""
+
+    file_count: int
+    total_bytes: int
+
+    @property
+    def total_mb(self) -> float:
+        return self.total_bytes / (1024 * 1024)
 
 
 def cache_path(url: str, base_dir: Path = DEFAULT_HTML_CACHE_DIR) -> Path:
@@ -64,12 +80,17 @@ def save(url: str, html: str, base_dir: Path = DEFAULT_HTML_CACHE_DIR) -> Path:
 
 
 def iter_cached(base_dir: Path = DEFAULT_HTML_CACHE_DIR) -> Iterator[CachedEntry]:
-    """キャッシュ配下の *.html を順次列挙する。"""
-    if not base_dir.exists():
+    """キャッシュ配下の *.html を順次列挙する。
+
+    ``base_dir`` が存在しない場合は rglob が 0 件を返す (FileNotFoundError は catch)。
+    """
+    try:
+        paths = sorted(base_dir.rglob("*.html"))
+    except FileNotFoundError:
         return
-    for path in sorted(base_dir.rglob("*.html")):
+    for path in paths:
         rel = path.relative_to(base_dir)
-        # rel の先頭がホスト名。残りをパスとして扱う。
+        # キャッシュ構造が <base>/<host>/<path> なので最初の要素がホストになる
         parts = rel.parts
         if len(parts) < 2:
             continue
@@ -85,17 +106,24 @@ def iter_cached(base_dir: Path = DEFAULT_HTML_CACHE_DIR) -> Iterator[CachedEntry
         )
 
 
-def total_size(base_dir: Path = DEFAULT_HTML_CACHE_DIR) -> int:
-    """キャッシュ全体のバイト合計。"""
-    return sum(entry.size_bytes for entry in iter_cached(base_dir))
+def summary(base_dir: Path = DEFAULT_HTML_CACHE_DIR) -> CacheSummary:
+    """キャッシュ全体のファイル数と合計バイト数を 1 回の走査で取得する。"""
+    count = 0
+    total = 0
+    for entry in iter_cached(base_dir):
+        count += 1
+        total += entry.size_bytes
+    return CacheSummary(file_count=count, total_bytes=total)
 
 
 __all__ = [
     "DEFAULT_HTML_CACHE_DIR",
+    "CachePolicy",
+    "CacheSummary",
     "CachedEntry",
     "cache_path",
     "iter_cached",
     "load",
     "save",
-    "total_size",
+    "summary",
 ]
