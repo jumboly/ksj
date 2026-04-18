@@ -29,6 +29,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from ksj import html_cache
 from ksj.catalog._parser import (
     IndexEntry,
     ParsedDetailPage,
@@ -84,7 +85,27 @@ class _HostRateLimiter:
 _RETRYABLE_HTTP = (httpx.TransportError, httpx.ReadTimeout)
 
 
-async def _fetch(client: httpx.AsyncClient, url: str, limiters: dict[str, _HostRateLimiter]) -> str:
+async def _fetch(
+    client: httpx.AsyncClient,
+    url: str,
+    limiters: dict[str, _HostRateLimiter],
+    *,
+    cache_dir: Path | None = None,
+    use_cache: bool = True,
+    update_cache: bool = True,
+) -> str:
+    """URL を取得する。キャッシュがあれば使用し、ネットワーク取得後は保存する。
+
+    - ``use_cache=True`` (デフォルト): キャッシュ上に HTML があればネットワークを叩かない
+    - ``use_cache=False``: 強制的にネットワークから取得
+    - ``update_cache=True`` (デフォルト): 取得成功時に ``cache_dir`` に保存
+    - ``cache_dir=None``: キャッシュ機能を無効化
+    """
+    if cache_dir is not None and use_cache:
+        cached = html_cache.load(url, cache_dir)
+        if cached is not None:
+            return cached
+
     host = urlparse(url).hostname or ""
     limiter = limiters.get(host)
     if limiter is None:
@@ -104,7 +125,10 @@ async def _fetch(client: httpx.AsyncClient, url: str, limiters: dict[str, _HostR
                 if 500 <= resp.status_code < 600:
                     resp.raise_for_status()
                 resp.raise_for_status()
-                return resp.text
+                html = resp.text
+                if cache_dir is not None and update_cache:
+                    html_cache.save(url, html, cache_dir)
+                return html
             finally:
                 limiter.release()
     raise RuntimeError("unreachable")  # tenacity が最後の例外を raise するのでここには来ない
@@ -203,6 +227,8 @@ async def refresh_catalog(
     base_catalog_path: Path | None = None,
     http_timeout: float = 30.0,
     progress_callback: (ProgressCallback | None) = None,
+    cache_dir: Path | None = html_cache.DEFAULT_HTML_CACHE_DIR,
+    use_cache: bool = True,
 ) -> tuple[Catalog, RefreshSummary]:
     """KSJ サイトを再スクレイプして新しい Catalog を返す。
 
@@ -225,7 +251,9 @@ async def refresh_catalog(
         # 1. index 取得
         if progress_callback is not None:
             progress_callback("index", None, None)
-        index_html = await _fetch(client, KSJ_INDEX_URL, limiters)
+        index_html = await _fetch(
+            client, KSJ_INDEX_URL, limiters, cache_dir=cache_dir, use_cache=use_cache
+        )
         index_entries = parse_index_page(index_html, KSJ_INDEX_URL)
 
         if only is not None:
@@ -235,7 +263,13 @@ async def refresh_catalog(
         # 2. 詳細ページを並列取得
         tasks: list[asyncio.Task[tuple[IndexEntry, ParsedDetailPage | None, str | None]]] = []
         for entry in index_entries:
-            tasks.append(asyncio.create_task(_fetch_detail_safely(client, entry, limiters)))
+            tasks.append(
+                asyncio.create_task(
+                    _fetch_detail_safely(
+                        client, entry, limiters, cache_dir=cache_dir, use_cache=use_cache
+                    )
+                )
+            )
 
         parsed_by_code: dict[str, tuple[IndexEntry, ParsedDetailPage]] = {}
         warnings: list[str] = []
@@ -296,11 +330,18 @@ async def refresh_catalog(
 
 
 async def _fetch_detail_safely(
-    client: httpx.AsyncClient, entry: IndexEntry, limiters: dict[str, _HostRateLimiter]
+    client: httpx.AsyncClient,
+    entry: IndexEntry,
+    limiters: dict[str, _HostRateLimiter],
+    *,
+    cache_dir: Path | None = None,
+    use_cache: bool = True,
 ) -> tuple[IndexEntry, ParsedDetailPage | None, str | None]:
     """個別データセットの取得失敗を全体のクラッシュに伝播させない。"""
     try:
-        html = await _fetch(client, entry.detail_page, limiters)
+        html = await _fetch(
+            client, entry.detail_page, limiters, cache_dir=cache_dir, use_cache=use_cache
+        )
         parsed = parse_detail_page(html, entry.detail_page, entry.code)
         return entry, parsed, None
     except Exception as exc:

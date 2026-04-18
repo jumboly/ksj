@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Annotated
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from ksj import __version__
+from ksj import __version__, html_cache
 from ksj.catalog import Catalog, Dataset, load_catalog
 from ksj.catalog.loader import CatalogNotFoundError
 from ksj.catalog.refresh import (
@@ -29,6 +30,13 @@ catalog_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(catalog_app, name="catalog")
+
+html_app = typer.Typer(
+    name="html",
+    help="KSJ サイトの HTML をローカルキャッシュする (fetch / list)",
+    no_args_is_help=True,
+)
+app.add_typer(html_app, name="html")
 
 console = Console()
 err_console = Console(stderr=True)
@@ -189,8 +197,23 @@ def catalog_refresh(
             help="カタログ YAML を上書きせずサマリのみ表示。",
         ),
     ] = False,
+    no_cache: Annotated[
+        bool,
+        typer.Option(
+            "--no-cache",
+            help="HTML キャッシュを無視して KSJ サイトから再取得する。"
+            " 取得した HTML はキャッシュに上書き保存される。",
+        ),
+    ] = False,
+    cache_dir: Annotated[
+        Path,
+        typer.Option("--cache-dir", help="HTML キャッシュディレクトリ。"),
+    ] = html_cache.DEFAULT_HTML_CACHE_DIR,
 ) -> None:
-    """KSJ サイトを再スクレイプし catalog/datasets.yaml を更新する。"""
+    """KSJ サイトを再スクレイプし catalog/datasets.yaml を更新する。
+
+    デフォルトでは HTML キャッシュを優先し、ネットワーク負荷を避ける。
+    """
 
     with console.status("[cyan]スクレイピング中...[/cyan]", spinner="dots"):
         catalog, summary = asyncio.run(
@@ -198,6 +221,8 @@ def catalog_refresh(
                 only=only,
                 parallel=parallel,
                 rate_per_sec=rate,
+                cache_dir=cache_dir,
+                use_cache=not no_cache,
             )
         )
 
@@ -247,3 +272,85 @@ def catalog_diff() -> None:
 
     if not (diff.added or diff.removed or diff.changed):
         console.print("[green]差分なし[/green]")
+
+
+@html_app.command("fetch")
+def html_fetch(
+    only: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--only",
+            help="指定データセットのみ取得 (複数指定可)。"
+            " 省略時はトップ + 全 131 詳細ページを取得する。",
+        ),
+    ] = None,
+    parallel: Annotated[int, typer.Option("--parallel", help="ホスト別の同時接続数。")] = 2,
+    rate: Annotated[float, typer.Option("--rate", help="ホスト別の秒間リクエスト数上限。")] = 1.0,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="キャッシュ済みでも再取得して上書きする。",
+        ),
+    ] = False,
+    cache_dir: Annotated[
+        Path,
+        typer.Option("--cache-dir", help="保存先ディレクトリ。"),
+    ] = html_cache.DEFAULT_HTML_CACHE_DIR,
+) -> None:
+    """KSJ サイトの HTML を ``cache_dir`` に保存する (カタログ YAML は更新しない)。
+
+    ``ksj catalog refresh`` は保存された HTML をそのまま使うので、初回実行後は
+    オフラインでカタログ再生成できる。
+    """
+
+    with console.status("[cyan]HTML を取得中...[/cyan]", spinner="dots"):
+        _, summary = asyncio.run(
+            refresh_catalog(
+                only=only,
+                parallel=parallel,
+                rate_per_sec=rate,
+                cache_dir=cache_dir,
+                use_cache=not force,
+            )
+        )
+
+    size_mb = html_cache.total_size(cache_dir) / (1024 * 1024)
+    console.print(
+        f"[green]HTML キャッシュ更新[/green]: {cache_dir} "
+        f"(全 {sum(1 for _ in html_cache.iter_cached(cache_dir))} ファイル, {size_mb:.1f} MB)"
+    )
+    if summary.warnings:
+        console.print(f"[yellow]{len(summary.warnings)} 件の警告[/yellow] (先頭 3 件のみ):")
+        for w in summary.warnings[:3]:
+            console.print(f"  {w}")
+
+
+@html_app.command("list")
+def html_list(
+    cache_dir: Annotated[
+        Path,
+        typer.Option("--cache-dir", help="キャッシュディレクトリ。"),
+    ] = html_cache.DEFAULT_HTML_CACHE_DIR,
+) -> None:
+    """HTML キャッシュの内容を一覧表示する。"""
+
+    entries = list(html_cache.iter_cached(cache_dir))
+    if not entries:
+        console.print(f"[yellow]キャッシュが空です: {cache_dir}[/yellow]")
+        console.print("  [dim]ksj html fetch で取得してください[/dim]")
+        return
+
+    table = Table(title=f"HTML キャッシュ ({cache_dir})")
+    table.add_column("path", style="cyan", no_wrap=False)
+    table.add_column("size", justify="right")
+    table.add_column("modified")
+    for entry in entries:
+        table.add_row(
+            str(entry.path.relative_to(cache_dir)),
+            f"{entry.size_bytes / 1024:.1f} KB",
+            entry.modified_at.strftime("%Y-%m-%d %H:%M"),
+        )
+    console.print(table)
+    total_mb = sum(e.size_bytes for e in entries) / (1024 * 1024)
+    console.print(f"[green]合計[/green]: {len(entries)} ファイル / {total_mb:.1f} MB")
