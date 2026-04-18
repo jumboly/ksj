@@ -163,13 +163,21 @@ def _file_entry_from_parsed(parsed: ParsedFile) -> FileEntry | None:
 
 _YEAR_IN_FILENAME_RE = re.compile(r"[-_](?:19|20)(\d{2})(?:\d{4})?(?=[-_.])")
 _YEAR_TEXT_RE = re.compile(r"(19|20)(\d{2})\s*年")
+# 元号「平成21年」「昭和60年」「令和3年」等の 2 桁年を西暦に変換する
+_ERA_YEAR_RE = re.compile(r"(昭和|平成|令和)\s*(\d{1,2})\s*年")
+_ERA_BASE: dict[str, int] = {"昭和": 1925, "平成": 1988, "令和": 2018}
 
 
 def _infer_year(parsed: ParsedFile) -> str:
     """ファイル名 or 年列テキストから版 (YYYY) を推定する。"""
-    m = _YEAR_TEXT_RE.search(parsed.year_raw or "")
+    raw = parsed.year_raw or ""
+    m = _YEAR_TEXT_RE.search(raw)
     if m is not None:
         return m.group(1) + m.group(2)
+    m_era = _ERA_YEAR_RE.search(raw)
+    if m_era is not None:
+        base = _ERA_BASE[m_era.group(1)]
+        return str(base + int(m_era.group(2)))
     m = _YEAR_IN_FILENAME_RE.search(parsed.filename)
     if m is not None:
         return "20" + m.group(1) if int(m.group(1)) < 50 else "19" + m.group(1)
@@ -207,7 +215,6 @@ def _build_dataset(index: IndexEntry, parsed: ParsedDetailPage) -> Dataset:
         category=category_label,
         detail_page=index.detail_page,
         license_raw=parsed.license_raw,
-        coverage="partial" if not parsed.files else "full",
         notes=notes,
         versions=version_models,
     )

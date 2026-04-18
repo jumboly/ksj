@@ -19,20 +19,37 @@
 
 ## ソース選択アルゴリズム
 
-`files[]` から「どの分割単位で統合するか」を決める優先順:
+`files[]` から「どの分割単位で統合するか」を決めるルール。複雑な優先順位・閾値判定は
+置かず、**現在入手できる最良の 1 本を選ぶか、識別子ごとに最新年度を集める**の 2 本道にする。
 
 1. `format-preference` 順で使える形式を 1 つ選ぶ (見つからなければエラー)
-2. 選んだ形式内で `scope` 別にバケット化
-3. scope 優先順:
-   1. `national` が 1 件ある → それを使って終了
-   2. `prefecture` が 47 件全揃い → 結合
-   3. `region` が 8 件 (52-59) 揃い → 結合
-   4. `regional_bureau` が 8 件 (82-89) 揃い → 結合
-   5. `mesh*` (1〜6 次のいずれか) がある → 全メッシュを結合
-   6. `urban_area` のみ → 警告を出して結合 (全国は作れない、「三大都市圏相当」として生成)
-   7. `river` / `municipality` のみ → `--allow-partial` 必須、警告
-4. 欠落した分割は WARNING。`--allow-partial` で続行、無ければエラー終了
-5. 結合結果の `coverage` (`full` / `partial`) と欠落リストを出力メタデータに記録
+2. 対象年度 (`--year`) 以前 (含む) に **`national` scope のファイルが 1 本でも存在する**なら、
+   その中で最も新しい年度の national を採用し、結合は行わず終了
+3. national が無いとき:
+   - ファイルを `scope` + 識別子 (`pref_code` / `mesh_code` / `bureau_code` /
+     `urban_area_code` / `muni_code` / `river_id`) でバケット化
+   - **各バケットについて、対象年度以前で最新の 1 件**を選ぶ
+   - 選ばれた全ファイルを結合する (scope が異なっていても union する。例えば
+     `region` + `prefecture` の混在もそのまま結合)
+4. 出力レコードに `source_year` 属性を付与し、どの年度のファイルから来たかを保持
+5. 出力メタデータに `coverage_summary` を記録 (採用ファイル数、識別子ごとの年度分布、
+   期待される識別子数との差分 ─ 例: `prefecture: 46/47, 沖縄のみ 2015 年版で補填`)
+
+### 背景
+
+この設計は「`coverage: full|partial` フラグで統合を事前ブロックする」案を置き換える。
+KSJ の各データセットは「整備範囲」が HTML の自然文で曖昧に書かれていて自動判定が
+難しく、手で partial を貼ると保守負荷が大きい。代わりに **「national が無いときは
+ある分だけ統合する」** ルールにすれば、どのデータセットでも同じロジックが適用でき、
+ユーザー側は `coverage_summary` を見て不足を把握できる。
+
+「対象年度以前で最新」を採用する理由は、例えば A09 のように**本州 46 県が 2018 年版、
+沖縄のみ 2015 年版**というケースで沖縄を落とさないため。全国を貼り合わせる目的では、
+多少古い年度を混ぜてでも識別子カバレッジを埋めるほうが有用な結果になる。
+
+年度混在が不都合な用途 (同一年度の断面を厳密に取りたい等) のため、`--strict-year`
+フラグで「対象年度と完全一致する識別子のみ採用」を選べるようにする。デフォルトは
+最新補填ありの挙動。
 
 ## CRS 変換の方針
 
@@ -76,10 +93,16 @@ GeoPackage と GeoParquet の両方に以下を埋め込む:
   "license_notes": "測量法に基づく国土地理院長承認 R6JHf 503",
   "target_crs": "EPSG:6668",
   "source_files": [
-    {"url": "...", "scope": "prefecture", "pref_code": 1, "crs": 6668, "format": "shp"}
+    {"url": "...", "scope": "prefecture", "pref_code": 1, "source_year": "2018", "crs": 6668, "format": "shp"}
   ],
-  "coverage": "full",
-  "missing_splits": [],
+  "coverage_summary": {
+    "strategy": "national",          // "national" | "latest-fill" | "strict-year"
+    "national_year": "2025",         // national 採用時のみ
+    "prefecture": {"covered": 47, "expected": 47, "year_distribution": {"2025": 47}},
+    "regional_bureau": null,
+    "mesh": null,
+    "notes": []                      // 例: "沖縄のみ 2015 版で補填"
+  },
   "generated_at": "2026-04-18T15:30:00+09:00",
   "ksj_tool_version": "0.1.0"
 }

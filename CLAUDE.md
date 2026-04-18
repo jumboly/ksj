@@ -52,7 +52,7 @@ uv run pytest -k "name"         # 名前一致テスト
 - `catalog/` — pydantic でスキーマ化したデータセットカタログ、YAML ローダー、KSJ サイトからの再スクレイパ
 - `downloader/` — httpx 非同期でホスト別レート制限・Range レジューム対応の ZIP 取得
 - `reader/` — pyogrio 経由で Shp/GML/GeoJSON を同一 I/F で読み込み、エンコーディング判定も担う
-- `integrator/` — CRS 変換・スキーマ統一・分割結合のパイプライン。`source_selector.py` が scope 優先順で入力ファイルを決定する
+- `integrator/` — CRS 変換・スキーマ統一・分割結合のパイプライン。`source_selector.py` が「national があれば national のみ、無ければ識別子ごとに最新年度を選んで union」のルールで入力ファイルを決定する
 - `writer/` — GeoPackage / GeoParquet 書出。出典・ライセンス・生成日等のメタデータを埋め込む
 
 カタログ本体は `catalog/datasets.yaml` (将来追加) にコミットし、KSJ 全 131 データセット分の実 URL・CRS・形式を列挙する。
@@ -63,7 +63,7 @@ uv run pytest -k "name"         # 名前一致テスト
 - **URL はテンプレート化せず実値を列挙**する。KSJ のダウンロード URL はデータセット間でパターンが不規則 (別ホスト `www.gsi.go.jp` 有、サブディレクトリ有無、年号表記 YYYYMMDD / YY 混在、圏域コード SYUTO/CHUBU/KINKI 等)
 - scope 語彙は `national` / `region` / `regional_bureau` / `prefecture` / `urban_area` / `river` / `municipality` / `mesh1〜mesh6` / `special` の 14 種類。メッシュは日本標準の 1〜6 次 (80km/10km/1km/500m/250m/100m)
 - 統合時のデフォルト目標 CRS は JGD2011 (EPSG:6668)。`--target-crs` で切替可能
-- 部分カバレッジ (一部県のみ、圏域のみ等) のデータセットは `coverage: partial` を明示し、`--allow-partial` 無しでは統合をエラーにする
+- 統合ルールは 2 本道: (1) national scope のファイルがあればそれを採用して終了、(2) 無ければ識別子 (pref_code / mesh_code / bureau_code / urban_area_code 等) ごとに「対象年度以前で最新」を 1 件ずつ選んで union する。これにより本州 46 県が 2018 版で沖縄のみ 2015 版、のようなケースでも沖縄を落とさず取り込める。出力メタの `coverage_summary` に識別子別の実績と補填状況を残す。年度を厳密一致させたい場合は `--strict-year` を指定する
 
 ## 運用上の取り決め
 

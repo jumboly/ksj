@@ -131,13 +131,20 @@ class TestClassifyScope:
         assert hints.scope == "urban_area"
         assert hints.urban_area_code == code
 
-    def test_mesh2_from_numeric_text(self) -> None:
+    def test_mesh1_from_4digit_numeric_text(self) -> None:
+        # JIS X 0410 の 1 次メッシュは 4 桁 (80km 区画。例: 3036 = 奄美大島付近)
         hints = classify_scope(cell_text="3036")
-        assert hints.scope == "mesh2"
+        assert hints.scope == "mesh1"
         assert hints.mesh_code == "3036"
 
-    def test_mesh2_from_dom_id(self) -> None:
-        # L03-b: id="a3036-1"
+    def test_mesh1_from_dom_id(self) -> None:
+        # L03-b: id="a3036-1" のメッシュコード 3036 は 1 次メッシュ
         hints = classify_scope(cell_text="3036", dom_id="a3036-1")
-        assert hints.scope == "mesh2"
+        assert hints.scope == "mesh1"
         assert hints.mesh_code == "3036"
+
+    def test_mesh2_from_6digit_numeric_text(self) -> None:
+        # 2 次メッシュは 6 桁 (10km 区画)
+        hints = classify_scope(cell_text="533945")
+        assert hints.scope == "mesh2"
+        assert hints.mesh_code == "533945"

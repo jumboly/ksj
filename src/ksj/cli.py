@@ -143,19 +143,14 @@ def list_datasets(
     table.add_column("category", style="dim")
     table.add_column("versions", justify="right")
     table.add_column("scopes")
-    table.add_column("coverage", justify="center")
 
     for code, dataset, scopes in matched:
-        coverage_cell = (
-            "[green]full[/green]" if dataset.coverage == "full" else "[yellow]partial[/yellow]"
-        )
         table.add_row(
             code,
             dataset.name,
             dataset.category or "",
             str(len(dataset.versions)),
             ", ".join(scopes),
-            coverage_cell,
         )
 
     console.print(table)
@@ -182,9 +177,6 @@ def info(
         console.print(f"  detail:    {dataset.detail_page}")
     if dataset.license:
         console.print(f"  license:   {dataset.license}")
-    console.print(f"  coverage:  {dataset.coverage}")
-    if dataset.coverage_notes:
-        console.print(f"    note:    {dataset.coverage_notes}")
     if dataset.notes:
         console.print(f"  notes:     {dataset.notes}")
 

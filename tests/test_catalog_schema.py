@@ -53,7 +53,6 @@ def test_dataset_round_trip() -> None:
     dataset = Dataset.model_validate(
         {
             "name": "サンプル",
-            "coverage": "full",
             "versions": {
                 "2025": {"files": [_base_file()]},
             },

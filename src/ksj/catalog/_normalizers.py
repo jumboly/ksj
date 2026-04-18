@@ -13,28 +13,34 @@ from typing import Literal, get_args
 from ksj.catalog.schema import Format
 
 # ---- Format ----------------------------------------------------------------
-# HTML の「データフォーマット」セクションに現れるキーワードから識別
+# HTML の「データフォーマット」セクションおよびテーブルの「形式」列に現れるキーワード。
+# ページ全体走査 (detect_formats_in_text) と行単位判定 (classify_row_format) で共用する。
+# 比較は大文字化して部分一致で行うため、小文字/大文字の表記揺れはキーに書かず 1 エントリで済む。
 _FORMAT_KEYWORDS: list[tuple[str, Format]] = [
     ("JPGIS2014", "gml_jpgis2014"),
     ("JPGIS 2014", "gml_jpgis2014"),
     ("JPGIS2.1", "gml_jpgis21"),
     ("JPGIS 2.1", "gml_jpgis21"),
-    ("CityGML", "citygml"),
-    ("シェープファイル", "shp"),
-    ("GeoJSON", "geojson"),
+    ("CITYGML", "citygml"),
+    ("シェープ", "shp"),
+    ("SHAPE", "shp"),
     ("GEOJSON", "geojson"),
     ("CSV", "csv"),
-    ("GeoTIFF", "geotiff"),
+    ("GEOTIFF", "geotiff"),
 ]
 
 
 def detect_formats_in_text(text: str) -> list[Format]:
-    """ページ上部のデータフォーマット説明文から全ての該当 format を抽出する。"""
+    """HTML 文字列から全ての該当 format を抽出する。
+
+    ページ上部の「データフォーマット」説明文と行単位の「形式」列の双方に使える。
+    「GML形式」単独 (JPGIS バージョン未指定) は旧規格 (JPGIS 2.1) とみなす。
+    """
+    upper = text.upper()
     found: list[Format] = []
     for keyword, fmt in _FORMAT_KEYWORDS:
-        if keyword in text and fmt not in found:
+        if keyword.upper() in upper and fmt not in found:
             found.append(fmt)
-    # 「GML形式」単独 (JPGIS バージョン未指定) は旧規格とみなす
     if "GML形式" in text and "gml_jpgis2014" not in found and "gml_jpgis21" not in found:
         found.append("gml_jpgis21")
     return found
@@ -66,6 +72,22 @@ def classify_url_format(*, filename: str, formats_in_page: list[Format]) -> Form
     if "SHAPE" in upper and "shp" in unique:
         return "shp"
     return "multi"
+
+
+def classify_row_format(*, cell_text: str, formats_in_page: list[Format]) -> Format:
+    """詳細ページの「形式」列テキストから Format を決定する。
+
+    「GML形式」単独 (JPGIS バージョン未指定) は、ページ内のフォーマット説明文で
+    JPGIS2014 が宣言されていれば 2014 側に寄せる (N13 のように表は「GML形式」と
+    書くが製品仕様書は JPGIS2014 準拠、というケース)。
+    """
+    found = detect_formats_in_text(cell_text)
+    if not found:
+        return "unknown"
+    fmt = found[0]
+    if fmt == "gml_jpgis21" and "gml_jpgis2014" in formats_in_page:
+        return "gml_jpgis2014"
+    return fmt
 
 
 # ---- CRS -------------------------------------------------------------------
@@ -191,17 +213,21 @@ _REGION_NAMES = {
     "沖縄地方",
 }
 
-# 地方整備局 (82-89 等)
-_BUREAU_NAMES = {
-    "東北地方整備局",
-    "関東地方整備局",
-    "北陸地方整備局",
-    "中部地方整備局",
-    "近畿地方整備局",
-    "中国地方整備局",
-    "四国地方整備局",
-    "九州地方整備局",
+# 北海道開発局 = 81、地方整備局 = 82-89。KSJ URL の末尾コード (A53-23-82_*.zip
+# 等) で確認済みの対応。沖縄総合事務局は現カタログに出現せずコード不明のため未収録
+# (出現が確認できた時点で追加する)。
+_BUREAU_NAME_TO_CODE: dict[str, str] = {
+    "北海道開発局": "81",
+    "東北地方整備局": "82",
+    "関東地方整備局": "83",
+    "北陸地方整備局": "84",
+    "中部地方整備局": "85",
+    "近畿地方整備局": "86",
+    "中国地方整備局": "87",
+    "四国地方整備局": "88",
+    "九州地方整備局": "89",
 }
+_BUREAU_NAMES: set[str] = set(_BUREAU_NAME_TO_CODE)
 
 # 三大都市圏。HTML や filename に現れる英字コード
 _URBAN_AREA_CODES = {"SYUTO": "首都圏", "CHUBU": "中部圏", "KINKI": "近畿圏"}
@@ -223,23 +249,41 @@ class ScopeHints:
     mesh_code: str | None = None
 
 
+# 日本の地域メッシュ規格 (JIS X 0410) の桁数 → 次数マッピング。
+# 1次メッシュ (80km) = 4 桁、2次 (10km) = 6 桁、3次 (1km) = 8 桁、
+# 分割 3次 (500m/250m/100m) は末尾に 1 桁ずつ区分コードが付与される。
 _VALID_MESH_DIGITS: dict[int, str] = {
-    2: "mesh1",
-    4: "mesh2",
-    6: "mesh3",
-    7: "mesh4",
-    8: "mesh5",
-    9: "mesh6",
+    4: "mesh1",
+    6: "mesh2",
+    8: "mesh3",
+    9: "mesh4",
+    10: "mesh5",
+    11: "mesh6",
 }
 
 
 def _parse_dom_id(dom_id: str | None) -> tuple[str, str] | None:
-    """td の id 属性から (種別, 値) を抽出する (例: prefecture13 → ("pref", "13"))。"""
+    """td の id 属性から (種別, 値) を抽出する。
+
+    KSJ の code 区間 (``prefectureNN`` の NN 値):
+    - 01..47: 都道府県
+    - 51..59: 地方区分 (51=北海道 / 52=東北 / 53=関東 / 54=中部(甲信越・北陸含む) /
+      55=近畿 / 56=中国 / 57=四国 / 58=九州 / 59=沖縄)
+    - 81..89: 北海道開発局 (81) および地方整備局 (82..89)
+
+    ``aXXXX`` はメッシュコード (L03-b: id=``a3036-1``)。
+    """
     if not dom_id:
         return None
     m = re.match(r"prefecture(\d{2})", dom_id)
     if m:
-        return ("pref", m.group(1))
+        code = m.group(1)
+        code_int = int(code)
+        if code_int >= 80:
+            return ("bureau", code)
+        if code_int >= 48:
+            return ("region", code)
+        return ("pref", code)
     m = re.match(r"a(\d{4,9})", dom_id)  # L03-b: id="a3036-1"
     if m:
         return ("mesh", m.group(1))
@@ -268,9 +312,14 @@ def classify_scope(
         return ScopeHints("national")
 
     if text in _REGION_NAMES:
+        # region の慣用コード体系は KSJ 公開資料で確認できないため、region_name のみで成立させる
         return ScopeHints("region", region_name=text)
     if text in _BUREAU_NAMES:
-        return ScopeHints("regional_bureau", bureau_name=text)
+        return ScopeHints(
+            "regional_bureau",
+            bureau_code=_BUREAU_NAME_TO_CODE[text],
+            bureau_name=text,
+        )
 
     if text in _URBAN_AREA_JP_NAMES:
         code = _URBAN_AREA_JP_NAMES[text]
@@ -303,8 +352,17 @@ def classify_scope(
                 pref_code=pref_code,
                 pref_name=_PREF_CODE_TO_NAME.get(pref_code, text or None),
             )
+        if kind == "region":
+            # text が `_REGION_NAMES` に無い呼称 (「甲信越・北陸地方」等) でも code と
+            # 元 text で region を成立させる
+            return ScopeHints("region", region_code=value, region_name=text or None)
+        if kind == "bureau":
+            # text が空 (別表で整備局名が省略されている) でも code から bureau を成立させる
+            return ScopeHints("regional_bureau", bureau_code=value, bureau_name=text or None)
         if kind == "mesh":
-            scope = _VALID_MESH_DIGITS.get(len(value), "mesh2")
+            # DOM id="aXXXX" は KSJ 慣行で概ね 4 桁 (1次メッシュ) を指すため、
+            # 桁数が合わないときは 1次メッシュ (最粗) にフォールバックする
+            scope = _VALID_MESH_DIGITS.get(len(value), "mesh1")
             return ScopeHints(scope, mesh_code=value)  # type: ignore[arg-type]
 
     if filename is not None:
@@ -319,6 +377,7 @@ def classify_scope(
 __all__ = [
     "Scope",
     "ScopeHints",
+    "classify_row_format",
     "classify_scope",
     "classify_url_format",
     "detect_formats_in_text",

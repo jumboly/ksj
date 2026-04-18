@@ -51,13 +51,14 @@ ksj integrate <code> --year YYYY
               [--target-crs EPSG:6668]
               [--format gpkg|parquet]
               [--format-preference shp,gml]
-              [--allow-partial]
+              [--strict-year]
               [--out PATH]
   分割データを結合し CRS 統一・属性正規化して出力する。
   - --target-crs      : 統合後の CRS (デフォルト EPSG:6668 = JGD2011)
   - --format          : 出力形式 (デフォルト gpkg)
   - --format-preference: 入力形式の優先順
-  - --allow-partial   : urban_area 等、全国未カバーのデータでも続行
+  - --strict-year     : 対象年度に完全一致する識別子のみ採用。デフォルトは最新補填あり
+                        (例: 本州 46 県 2018、沖縄のみ 2015 も取り込む)
 
 ksj convert <input> --format gpkg|parquet [--out PATH]
   統合済みファイルの形式を変換する (GeoPackage ⇄ GeoParquet)。

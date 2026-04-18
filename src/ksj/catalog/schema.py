@@ -42,16 +42,14 @@ Format = Literal[
     "unknown",
 ]
 
-Coverage = Literal["full", "partial"]
-
 # EPSG 整数で保持。docs/catalog.md の「CRS の正規化」表を参照。
 KNOWN_EPSG = {4301, 4612, 6668, 4326}
 
 # scope → バリデーションで必須となる識別子コードフィールド名。
-# ここに無い scope (national, special) は付随コード無しで成立する。
+# ここに無い scope (national, special, region) は付随コード無しで成立する。
+# region は KSJ 公開資料で慣用コードが明示されておらず、region_name だけで識別する運用。
 _SCOPE_REQUIRED_CODE_FIELD: dict[str, str] = {
     "prefecture": "pref_code",
-    "region": "region_code",
     "regional_bureau": "bureau_code",
     "urban_area": "urban_area_code",
     "river": "river_id",
@@ -163,8 +161,6 @@ class Dataset(BaseModel):
     )
     license: str | None = None
     license_raw: str | None = None
-    coverage: Coverage = "full"
-    coverage_notes: str | None = None
     notes: str | None = None
     # year 文字列 → Version。YAML 側では "2025" のようなキーで保持される
     versions: dict[str, Version] = Field(default_factory=dict)

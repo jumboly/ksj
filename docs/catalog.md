@@ -111,7 +111,6 @@ datasets:
     geometry_types: [polygon]
     license: "CC BY 4.0"
     license_raw: "測量法に基づく国土地理院長承認 R6JHf 503"
-    coverage: full            # full | partial (一部県のみ等)
     versions:
       "2025":
         reference_date: "2025-01-01"
@@ -166,8 +165,7 @@ datasets:
   A53:
     name: 多段階浸水想定
     category: 政策区域 / 災害・防災
-    coverage: partial
-    coverage_notes: "東北/関東/中部/近畿/中国/四国/九州 整備局単位で配布。2024 版で一部局欠損"
+    notes: "東北/関東/中部/近畿/中国/四国/九州 整備局単位で配布。national 無し、bureau 別に統合される"
     versions:
       "2024":
         files:
@@ -180,8 +178,7 @@ datasets:
 
   A51:
     name: 雨水出水 (内水) 浸水想定区域
-    coverage: partial
-    coverage_notes: "47都道府県中9県のみ公開 (2024 時点)"
+    notes: "47都道府県中9県のみ公開 (2024 時点)。統合時は coverage_summary に不足県が記録される"
     versions:
       "2024":
         files:
