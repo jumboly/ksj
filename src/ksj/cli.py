@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -19,6 +20,7 @@ from rich.progress import (
 
 from ksj import __version__, handlers, html_cache
 from ksj.downloader import DownloadResult
+from ksj.downloader.client import OnFileDone, OnStart
 from ksj.errors import HandlerError
 from ksj.html_cache import CachePolicy
 from ksj.integrator import DEFAULT_TARGET_CRS
@@ -85,6 +87,37 @@ def _render_failure(fmt: OutputFormat, exc: HandlerError) -> None:
         rich_render.failure(exc, err_console=err_console)
 
 
+def _dispatch[T](
+    ctx: typer.Context,
+    *,
+    command: str,
+    run: Callable[[], T],
+    rich_renderer: Callable[[T], None],
+    status_message: str | None = None,
+) -> T | None:
+    """handler 呼び出し → エラー→exit / 出力整形の定型を畳み込む。
+
+    ``status_message`` を渡すと rich モード時のみ spinner で囲む。
+    ``download`` のように Progress UI を自前で組むケースは対象外 (個別に書く)。
+    """
+    fmt = _get_format(ctx)
+    try:
+        if status_message is not None and fmt is OutputFormat.RICH:
+            with console.status(status_message, spinner="dots"):
+                result = run()
+        else:
+            result = run()
+    except HandlerError as exc:
+        _render_failure(fmt, exc)
+        raise typer.Exit(code=exc.exit_code) from exc
+
+    if fmt is OutputFormat.JSON:
+        json_render.success(command, result)
+    else:
+        rich_renderer(result)
+    return result
+
+
 @app.callback()
 def _main(
     ctx: typer.Context,
@@ -136,17 +169,14 @@ def list_datasets(
     ] = None,
 ) -> None:
     """カタログ内のデータセット一覧を表示する。"""
-    fmt = _get_format(ctx)
-    try:
-        result = handlers.list_datasets_data(category=category, scope=scope)
-    except HandlerError as exc:
-        _render_failure(fmt, exc)
-        raise typer.Exit(code=exc.exit_code) from exc
-
-    if fmt is OutputFormat.JSON:
-        json_render.success("list", result)
-    else:
-        rich_render.list_datasets(result, console=console, err_console=err_console)
+    _dispatch(
+        ctx,
+        command="list",
+        run=lambda: handlers.list_datasets_data(category=category, scope=scope),
+        rich_renderer=lambda r: rich_render.list_datasets(
+            r, console=console, err_console=err_console
+        ),
+    )
 
 
 @app.command()
@@ -155,17 +185,12 @@ def info(
     code: Annotated[str, typer.Argument(help="データセットコード (例: N03)。")],
 ) -> None:
     """単一データセットの年度別 scope/CRS/形式分布を表示する。"""
-    fmt = _get_format(ctx)
-    try:
-        result = handlers.dataset_info_data(code)
-    except HandlerError as exc:
-        _render_failure(fmt, exc)
-        raise typer.Exit(code=exc.exit_code) from exc
-
-    if fmt is OutputFormat.JSON:
-        json_render.success("info", result)
-    else:
-        rich_render.dataset_info(result, console=console)
+    _dispatch(
+        ctx,
+        command="info",
+        run=lambda: handlers.dataset_info_data(code),
+        rich_renderer=lambda r: rich_render.dataset_info(r, console=console),
+    )
 
 
 @catalog_app.command("refresh")
@@ -211,54 +236,33 @@ def catalog_refresh(
 
     デフォルトでは HTML キャッシュを優先し、ネットワーク負荷を避ける。
     """
-    fmt = _get_format(ctx)
     policy = CachePolicy.OFF if no_cache else CachePolicy.READ_WRITE
-
-    def _run() -> Any:
-        return handlers.catalog_refresh_data(
+    _dispatch(
+        ctx,
+        command="catalog.refresh",
+        run=lambda: handlers.catalog_refresh_data(
             only=only,
             parallel=parallel,
             rate=rate,
             cache_dir=cache_dir,
             cache_policy=policy,
             dry_run=dry_run,
-        )
-
-    try:
-        if fmt is OutputFormat.RICH:
-            with console.status("[cyan]スクレイピング中...[/cyan]", spinner="dots"):
-                report = _run()
-        else:
-            report = _run()
-    except HandlerError as exc:
-        _render_failure(fmt, exc)
-        raise typer.Exit(code=exc.exit_code) from exc
-
-    if fmt is OutputFormat.JSON:
-        json_render.success("catalog.refresh", report)
-    else:
-        rich_render.refresh_summary(report, console=console, dry_run=dry_run)
+        ),
+        rich_renderer=lambda r: rich_render.refresh_summary(r, console=console, dry_run=dry_run),
+        status_message="[cyan]スクレイピング中...[/cyan]",
+    )
 
 
 @catalog_app.command("diff")
 def catalog_diff(ctx: typer.Context) -> None:
     """同梱カタログ YAML と最新スクレイプ結果の差分を表示する。"""
-    fmt = _get_format(ctx)
-    try:
-        # rich モードではネットワーク待ちを spinner で見せる。JSON では UI を出さない。
-        if fmt is OutputFormat.RICH:
-            with console.status("[cyan]スクレイピング中...[/cyan]", spinner="dots"):
-                diff = handlers.catalog_diff_data()
-        else:
-            diff = handlers.catalog_diff_data()
-    except HandlerError as exc:
-        _render_failure(fmt, exc)
-        raise typer.Exit(code=exc.exit_code) from exc
-
-    if fmt is OutputFormat.JSON:
-        json_render.success("catalog.diff", diff)
-    else:
-        rich_render.catalog_diff(diff, console=console)
+    _dispatch(
+        ctx,
+        command="catalog.diff",
+        run=handlers.catalog_diff_data,
+        rich_renderer=lambda d: rich_render.catalog_diff(d, console=console),
+        status_message="[cyan]スクレイピング中...[/cyan]",
+    )
 
 
 @html_app.command("fetch")
@@ -291,32 +295,20 @@ def html_fetch(
     ``ksj catalog refresh`` は保存された HTML をそのまま使うので、初回実行後は
     オフラインでカタログ再生成できる。
     """
-    fmt = _get_format(ctx)
     policy = CachePolicy.OFF if force else CachePolicy.READ_WRITE
-
-    def _run() -> Any:
-        return handlers.html_fetch_data(
+    _dispatch(
+        ctx,
+        command="html.fetch",
+        run=lambda: handlers.html_fetch_data(
             only=only,
             parallel=parallel,
             rate=rate,
             cache_dir=cache_dir,
             cache_policy=policy,
-        )
-
-    try:
-        if fmt is OutputFormat.RICH:
-            with console.status("[cyan]HTML を取得中...[/cyan]", spinner="dots"):
-                report = _run()
-        else:
-            report = _run()
-    except HandlerError as exc:
-        _render_failure(fmt, exc)
-        raise typer.Exit(code=exc.exit_code) from exc
-
-    if fmt is OutputFormat.JSON:
-        json_render.success("html.fetch", report)
-    else:
-        rich_render.html_fetch_summary(report, console=console)
+        ),
+        rich_renderer=lambda r: rich_render.html_fetch_summary(r, console=console),
+        status_message="[cyan]HTML を取得中...[/cyan]",
+    )
 
 
 @html_app.command("list")
@@ -328,13 +320,12 @@ def html_list(
     ] = html_cache.DEFAULT_HTML_CACHE_DIR,
 ) -> None:
     """HTML キャッシュの内容を一覧表示する。"""
-    fmt = _get_format(ctx)
-    result = handlers.html_list_data(cache_dir=cache_dir)
-
-    if fmt is OutputFormat.JSON:
-        json_render.success("html.list", result)
-    else:
-        rich_render.html_list(result, console=console)
+    _dispatch(
+        ctx,
+        command="html.list",
+        run=lambda: handlers.html_list_data(cache_dir=cache_dir),
+        rich_renderer=lambda r: rich_render.html_list(r, console=console),
+    )
 
 
 # ---- download / ingest-local -----------------------------------------------
@@ -386,44 +377,39 @@ def download(
     """カタログに記載された URL を並列ダウンロードする (Range レジューム対応)。"""
     fmt = _get_format(ctx)
 
-    try:
+    # JSON モードでは Progress UI を一切出さないので、rich モード時だけ
+    # ``contextlib.ExitStack`` で Progress を組み立てて callback を差し込む。
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        on_start: OnStart | None = None
+        on_done: OnFileDone | None = None
         if fmt is OutputFormat.RICH:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[cyan]ダウンロード中[/cyan]"),
-                BarColumn(),
-                MofNCompleteColumn(),
-                TextColumn("files"),
-                TimeElapsedColumn(),
-                console=console,
-                transient=False,
-            ) as progress:
-                task_id = progress.add_task("download", total=0)
-
-                def _on_start(count: int) -> None:
-                    progress.update(task_id, total=count)
-                    console.print(
-                        f"[cyan]{code}/{year}[/cyan] の {count} ファイルをダウンロードします"
-                        f" (parallel={parallel}, rate={rate}/s)"
-                    )
-
-                def _on_done(_: DownloadResult) -> None:
-                    progress.advance(task_id)
-
-                report = handlers.download_data(
-                    code,
-                    year,
-                    data_dir=data_dir,
-                    format_preference=_parse_format_preference(format_preference),
-                    crs_filter=crs,
-                    scope_filter=scope or None,
-                    prefer_national=prefer_national,
-                    parallel=parallel,
-                    rate=rate,
-                    on_start=_on_start,
-                    progress=_on_done,
+            progress = stack.enter_context(
+                Progress(
+                    SpinnerColumn(),
+                    TextColumn("[cyan]ダウンロード中[/cyan]"),
+                    BarColumn(),
+                    MofNCompleteColumn(),
+                    TextColumn("files"),
+                    TimeElapsedColumn(),
+                    console=console,
+                    transient=False,
                 )
-        else:
+            )
+            task_id = progress.add_task("download", total=0)
+
+            def on_start(count: int) -> None:
+                progress.update(task_id, total=count)
+                console.print(
+                    f"[cyan]{code}/{year}[/cyan] の {count} ファイルをダウンロードします"
+                    f" (parallel={parallel}, rate={rate}/s)"
+                )
+
+            def on_done(_: DownloadResult) -> None:
+                progress.advance(task_id)
+
+        try:
             report = handlers.download_data(
                 code,
                 year,
@@ -434,10 +420,12 @@ def download(
                 prefer_national=prefer_national,
                 parallel=parallel,
                 rate=rate,
+                on_start=on_start,
+                progress=on_done,
             )
-    except HandlerError as exc:
-        _render_failure(fmt, exc)
-        raise typer.Exit(code=exc.exit_code) from exc
+        except HandlerError as exc:
+            _render_failure(fmt, exc)
+            raise typer.Exit(code=exc.exit_code) from exc
 
     if fmt is OutputFormat.JSON:
         json_render.success("download", report)
@@ -463,22 +451,14 @@ def ingest_local(
     data_dir: Annotated[Path, typer.Option("--data-dir", help="データ格納ルート。")] = Path("data"),
 ) -> None:
     """ローカル ZIP を `data/raw/<code>/<year>/` に取り込む。"""
-    fmt = _get_format(ctx)
-    try:
-        report = handlers.ingest_local_data(
-            code,
-            year,
-            source=source,
-            data_dir=data_dir,
-        )
-    except HandlerError as exc:
-        _render_failure(fmt, exc)
-        raise typer.Exit(code=exc.exit_code) from exc
-
-    if fmt is OutputFormat.JSON:
-        json_render.success("ingest-local", report)
-    else:
-        rich_render.ingest_local_summary(report, console=console, data_dir=data_dir)
+    _dispatch(
+        ctx,
+        command="ingest-local",
+        run=lambda: handlers.ingest_local_data(code, year, source=source, data_dir=data_dir),
+        rich_renderer=lambda r: rich_render.ingest_local_summary(
+            r, console=console, data_dir=data_dir
+        ),
+    )
 
 
 # ---- integrate -------------------------------------------------------------
@@ -534,10 +514,10 @@ def integrate(
     --strict-year で年度完全一致のみに制限、--allow-partial で未取得ソースを
     無視して続行する。
     """
-    fmt = _get_format(ctx)
-
-    def _run() -> Any:
-        return handlers.integrate_data(
+    _dispatch(
+        ctx,
+        command="integrate",
+        run=lambda: handlers.integrate_data(
             code,
             year,
             data_dir=data_dir,
@@ -546,38 +526,18 @@ def integrate(
             strict_year=strict_year,
             allow_partial=allow_partial,
             output_path=out,
-        )
-
-    try:
-        if fmt is OutputFormat.RICH:
-            with console.status(
-                f"[cyan]{code}/{year} を統合中... (CRS={target_crs})[/cyan]",
-                spinner="dots",
-            ):
-                result = _run()
-        else:
-            result = _run()
-    except HandlerError as exc:
-        _render_failure(fmt, exc)
-        raise typer.Exit(code=exc.exit_code) from exc
-
-    if fmt is OutputFormat.JSON:
-        json_render.success("integrate", result)
-    else:
-        rich_render.integrate_summary(result, console=console)
+        ),
+        rich_renderer=lambda r: rich_render.integrate_summary(r, console=console),
+        status_message=f"[cyan]{code}/{year} を統合中... (CRS={target_crs})[/cyan]",
+    )
 
 
 @catalog_app.command("summary")
 def catalog_summary_cmd(ctx: typer.Context) -> None:
     """カタログ全体のメタ集計 (categories / scope_histogram / years_seen) を表示する。"""
-    fmt = _get_format(ctx)
-    try:
-        summary = handlers.catalog_summary_data()
-    except HandlerError as exc:
-        _render_failure(fmt, exc)
-        raise typer.Exit(code=exc.exit_code) from exc
-
-    if fmt is OutputFormat.JSON:
-        json_render.success("catalog.summary", summary)
-    else:
-        rich_render.catalog_summary(summary, console=console)
+    _dispatch(
+        ctx,
+        command="catalog.summary",
+        run=handlers.catalog_summary_data,
+        rich_renderer=lambda s: rich_render.catalog_summary(s, console=console),
+    )

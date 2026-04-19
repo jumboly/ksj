@@ -221,13 +221,18 @@ def catalog_summary(summary: CatalogSummary, *, console: Console) -> None:
     console.print(scope_table)
 
     if summary.years_seen:
-        head, tail = summary.years_seen[:5], summary.years_seen[-5:]
-        span = ", ".join(head)
-        if len(summary.years_seen) > 10:
-            span += f" ... {', '.join(tail)}"
-        elif len(summary.years_seen) > 5:
-            span = ", ".join(summary.years_seen)
+        span = _format_year_span(summary.years_seen)
         console.print(f"years seen: {len(summary.years_seen)} 年 ({span})")
+
+
+def _format_year_span(years: list[str]) -> str:
+    """年号リストを視認性のある略記に整形する。
+
+    10 件超は先頭 5 + 末尾 5 を ``...`` で省略、以下は全件列挙する。
+    """
+    if len(years) <= 10:
+        return ", ".join(years)
+    return f"{', '.join(years[:5])} ... {', '.join(years[-5:])}"
 
 
 def failure(error: HandlerError, *, err_console: Console) -> None:

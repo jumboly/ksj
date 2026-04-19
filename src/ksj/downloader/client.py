@@ -36,6 +36,7 @@ _DEFAULT_CHUNK_SIZE = 1024 * 256
 
 OnProgress = Callable[[str, int, int | None], None]  # (url, bytes_read, total)
 OnFileDone = Callable[["DownloadResult"], None]  # 1 ファイルの完了 (成功 or 失敗) ごとに呼ぶ
+OnStart = Callable[[int], None]  # DL 開始時に targets 総数 1 回だけ通知
 
 
 @dataclass(slots=True)

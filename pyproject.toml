@@ -64,6 +64,11 @@ ignore = [
     "RUF003", # コメント中の全角括弧 (日本語)
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# handlers/__init__.py は TYPE_CHECKING ブロックで型ヒントを露出しつつ、
+# 実行時は __getattr__ で遅延 import する設計。F401 はその性質上避けられない。
+"src/ksj/handlers/__init__.py" = ["F401"]
+
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
