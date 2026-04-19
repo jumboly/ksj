@@ -45,8 +45,9 @@ KSJ のデータ配布単位は大きく 3 パターンある:
 2. [cli.md](cli.md) — CLI コマンド体系
 3. [integration.md](integration.md) — 統合パイプライン、ソース選択アルゴリズム、欠損値処理
 4. [architecture.md](architecture.md) — モジュール構成、依存ライブラリ、ディレクトリ規約
-5. [roadmap.md](roadmap.md) — 段階的実装計画 (Phase 0〜7)、MVP 対象データセット
+5. [roadmap.md](roadmap.md) — 段階的実装計画 (Phase 0〜8)、MVP 対象データセット
 6. [risks.md](risks.md) — リスクと対処
+7. [json-output.md](json-output.md) — `--json` / `--format json` 出力モードの成功/失敗スキーマ契約
 
 ## 非目標 (スコープ外)
 

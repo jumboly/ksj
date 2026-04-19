@@ -19,14 +19,12 @@ from rich.progress import (
     TextColumn,
     TimeElapsedColumn,
 )
-from rich.table import Table
 
-from ksj import __version__, html_cache
-from ksj.catalog import Catalog, Dataset, load_catalog
+from ksj import __version__, handlers, html_cache
+from ksj.catalog import Catalog, load_catalog
 from ksj.catalog.loader import CatalogNotFoundError
 from ksj.catalog.refresh import (
     RefreshSummary,
-    diff_catalogs,
     refresh_catalog,
     save_catalog,
 )
@@ -41,6 +39,7 @@ from ksj.downloader import (
     save_manifest,
 )
 from ksj.downloader.manifest import LOCAL_URL_PREFIX
+from ksj.errors import HandlerError
 from ksj.html_cache import CachePolicy
 from ksj.integrator import (
     DEFAULT_TARGET_CRS,
@@ -51,6 +50,7 @@ from ksj.integrator import (
     integrate as integrate_dataset,
 )
 from ksj.reader import NoMatchingFormatError
+from ksj.renderers import OutputFormat, json_render, rich_render
 
 app = typer.Typer(
     name="ksj",
@@ -93,10 +93,50 @@ def _configure_logging() -> None:
     logger.setLevel(logging.WARNING)
 
 
+@dataclass(slots=True)
+class _CLIState:
+    """root callback で決まる実行全体の出力モード。"""
+
+    format: OutputFormat
+
+
+def _get_format(ctx: typer.Context) -> OutputFormat:
+    state = ctx.obj
+    assert isinstance(state, _CLIState)
+    return state.format
+
+
+def _render_failure(fmt: OutputFormat, exc: HandlerError) -> None:
+    if fmt is OutputFormat.JSON:
+        json_render.failure(exc)
+    else:
+        rich_render.failure(exc, err_console=err_console)
+
+
 @app.callback()
-def _main() -> None:
+def _main(
+    ctx: typer.Context,
+    json_mode: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="JSON 出力モード (--format json と等価、同時指定時はこちらを優先)。",
+        ),
+    ] = False,
+    output_format: Annotated[
+        OutputFormat,
+        typer.Option(
+            "--format",
+            help="出力形式。rich (デフォルト、人間向け表組) または json (機械可読)。",
+            case_sensitive=False,
+        ),
+    ] = OutputFormat.RICH,
+) -> None:
     """Typer がサブコマンド構造になるよう明示的なコールバックを置く。"""
     _configure_logging()
+    # --json 指定時は --format より優先する。両方同時指定時の警告は出さず、
+    # JSON 契約は docs/json-output.md に明記する。
+    ctx.obj = _CLIState(format=OutputFormat.JSON if json_mode else output_format)
 
 
 @app.command()
@@ -106,25 +146,16 @@ def version() -> None:
 
 
 def _load_or_exit() -> Catalog:
-    """カタログを読み込み、見つからなければ説明付きで終了する。"""
+    """カタログを読み込み、見つからなければ説明付きで終了する。
+
+    read-only 系は ``ksj.handlers._catalog_loader.load_catalog_or_raise`` を使う。
+    こちらは未移行の書き込み系コマンドが使うため残す。
+    """
     try:
         return load_catalog()
     except CatalogNotFoundError as exc:
         err_console.print(f"[red]catalog/datasets.yaml が見つかりません: {exc}[/red]")
         raise typer.Exit(code=1) from exc
-
-
-def _collect_scopes(dataset: Dataset) -> list[str]:
-    """データセットに現れる scope を重複除去して挿入順で返す。"""
-    return list(
-        dict.fromkeys(file.scope for version in dataset.versions.values() for file in version.files)
-    )
-
-
-def _category_matches(dataset: Dataset, query: str | None) -> bool:
-    if query is None:
-        return True
-    return dataset.category is not None and query in dataset.category
 
 
 def _run_refresh(
@@ -162,6 +193,7 @@ def _print_summary_warnings(summary: RefreshSummary) -> None:
 
 @app.command("list")
 def list_datasets(
+    ctx: typer.Context,
     category: Annotated[
         str | None,
         typer.Option(
@@ -178,75 +210,36 @@ def list_datasets(
     ] = None,
 ) -> None:
     """カタログ内のデータセット一覧を表示する。"""
-    catalog = _load_or_exit()
+    fmt = _get_format(ctx)
+    try:
+        result = handlers.list_datasets_data(category=category, scope=scope)
+    except HandlerError as exc:
+        _render_failure(fmt, exc)
+        raise typer.Exit(code=exc.exit_code) from exc
 
-    matched = [
-        (code, dataset, _collect_scopes(dataset))
-        for code, dataset in catalog.datasets.items()
-        if _category_matches(dataset, category)
-        and (scope is None or scope in _collect_scopes(dataset))
-    ]
-
-    table = Table(title=f"KSJ カタログ ({len(catalog.datasets)} 件収録)")
-    table.add_column("code", style="cyan", no_wrap=True)
-    table.add_column("name")
-    table.add_column("category", style="dim")
-    table.add_column("versions", justify="right")
-    table.add_column("scopes")
-
-    for code, dataset, scopes in matched:
-        table.add_row(
-            code,
-            dataset.name,
-            dataset.category or "",
-            str(len(dataset.versions)),
-            ", ".join(scopes),
-        )
-
-    console.print(table)
-    if not matched:
-        err_console.print("[yellow]条件にマッチするデータセットはありません[/yellow]")
+    if fmt is OutputFormat.JSON:
+        json_render.success("list", result)
+    else:
+        rich_render.list_datasets(result, console=console, err_console=err_console)
 
 
 @app.command()
 def info(
+    ctx: typer.Context,
     code: Annotated[str, typer.Argument(help="データセットコード (例: N03)。")],
 ) -> None:
     """単一データセットの年度別 scope/CRS/形式分布を表示する。"""
-    catalog = _load_or_exit()
+    fmt = _get_format(ctx)
+    try:
+        result = handlers.dataset_info_data(code)
+    except HandlerError as exc:
+        _render_failure(fmt, exc)
+        raise typer.Exit(code=exc.exit_code) from exc
 
-    dataset = catalog.datasets.get(code)
-    if dataset is None:
-        err_console.print(f"[red]データセット '{code}' はカタログに存在しません[/red]")
-        raise typer.Exit(code=1)
-
-    console.print(f"[bold cyan]{code}[/bold cyan]  {dataset.name}")
-    if dataset.category:
-        console.print(f"  category:  {dataset.category}")
-    if dataset.detail_page:
-        console.print(f"  detail:    {dataset.detail_page}")
-    if dataset.license:
-        console.print(f"  license:   {dataset.license}")
-    if dataset.notes:
-        console.print(f"  notes:     {dataset.notes}")
-
-    for year, version_entry in sorted(dataset.versions.items()):
-        table = Table(title=f"[{year}]  files={len(version_entry.files)}", title_justify="left")
-        table.add_column("scope", style="cyan")
-        table.add_column("code", style="dim")
-        table.add_column("crs", justify="right")
-        table.add_column("format")
-        table.add_column("url")
-
-        for f in version_entry.files:
-            table.add_row(
-                f.scope,
-                f.scope_identifier,
-                str(f.crs) if f.crs is not None else "-",
-                f.format,
-                f.url,
-            )
-        console.print(table)
+    if fmt is OutputFormat.JSON:
+        json_render.success("info", result)
+    else:
+        rich_render.dataset_info(result, console=console)
 
 
 @catalog_app.command("refresh")
@@ -317,28 +310,24 @@ def catalog_refresh(
 
 
 @catalog_app.command("diff")
-def catalog_diff() -> None:
+def catalog_diff(ctx: typer.Context) -> None:
     """同梱カタログ YAML と最新スクレイプ結果の差分を表示する。"""
+    fmt = _get_format(ctx)
+    try:
+        # rich モードではネットワーク待ちを spinner で見せる。JSON では UI を出さない。
+        if fmt is OutputFormat.RICH:
+            with console.status("[cyan]スクレイピング中...[/cyan]", spinner="dots"):
+                diff = handlers.catalog_diff_data()
+        else:
+            diff = handlers.catalog_diff_data()
+    except HandlerError as exc:
+        _render_failure(fmt, exc)
+        raise typer.Exit(code=exc.exit_code) from exc
 
-    current = _load_or_exit()
-    with console.status("[cyan]スクレイピング中...[/cyan]", spinner="dots"):
-        fresh, _ = asyncio.run(refresh_catalog())
-
-    diff = diff_catalogs(current, fresh)
-
-    table = Table(title="catalog diff")
-    table.add_column("kind", style="cyan")
-    table.add_column("code")
-    for code in diff.added:
-        table.add_row("[green]added[/green]", code)
-    for code in diff.removed:
-        table.add_row("[red]removed[/red]", code)
-    for code in diff.changed:
-        table.add_row("[yellow]changed[/yellow]", code)
-    console.print(table)
-
-    if not (diff.added or diff.removed or diff.changed):
-        console.print("[green]差分なし[/green]")
+    if fmt is OutputFormat.JSON:
+        json_render.success("catalog.diff", diff)
+    else:
+        rich_render.catalog_diff(diff, console=console)
 
 
 @html_app.command("fetch")
@@ -390,35 +379,20 @@ def html_fetch(
 
 @html_app.command("list")
 def html_list(
+    ctx: typer.Context,
     cache_dir: Annotated[
         Path,
         typer.Option("--cache-dir", help="キャッシュディレクトリ。"),
     ] = html_cache.DEFAULT_HTML_CACHE_DIR,
 ) -> None:
     """HTML キャッシュの内容を一覧表示する。"""
+    fmt = _get_format(ctx)
+    result = handlers.html_list_data(cache_dir=cache_dir)
 
-    entries = list(html_cache.iter_cached(cache_dir))
-    if not entries:
-        console.print(f"[yellow]キャッシュが空です: {cache_dir}[/yellow]")
-        console.print("  [dim]ksj html fetch で取得してください[/dim]")
-        return
-
-    table = Table(title=f"HTML キャッシュ ({cache_dir})")
-    table.add_column("path", style="cyan", no_wrap=False)
-    table.add_column("size", justify="right")
-    table.add_column("modified")
-    total_bytes = 0
-    for entry in entries:
-        total_bytes += entry.size_bytes
-        table.add_row(
-            str(entry.path.relative_to(cache_dir)),
-            f"{entry.size_bytes / 1024:.1f} KB",
-            entry.modified_at.strftime("%Y-%m-%d %H:%M"),
-        )
-    console.print(table)
-    console.print(
-        f"[green]合計[/green]: {len(entries)} ファイル / {total_bytes / (1024 * 1024):.1f} MB"
-    )
+    if fmt is OutputFormat.JSON:
+        json_render.success("html.list", result)
+    else:
+        rich_render.html_list(result, console=console)
 
 
 # ---- download / ingest-local -----------------------------------------------
