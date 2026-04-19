@@ -29,7 +29,7 @@ KSJ のデータ配布単位は大きく 3 パターンある:
 | UI | CLI が最優先、TUI/Web は将来拡張 |
 | カタログ | リポジトリ同梱 YAML + `ksj catalog refresh` で再生成 |
 | データ保存 | プロジェクト内 `./data/` (デフォルト)、`--data-dir` で上書き |
-| 出力形式 | GeoPackage 主 + GeoParquet オプション (`--format`) |
+| 出力形式 | GeoPackage |
 | 対象範囲 | KSJ 全データセットのカタログ化、統合検証は MVP 5 件 |
 | 統合レベル | 結合 + CRS 統一 + 属性正規化 (スキーマ統一 + UTF-8) |
 | デフォルト CRS | JGD2011 (EPSG:6668)、`--target-crs` で上書き |

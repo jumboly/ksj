@@ -123,54 +123,6 @@ def test_integrate_writes_gpkg_with_metadata(
     assert metadata["source_files"][0]["source_year"] == "2025"
 
 
-def test_integrate_writes_parquet_with_metadata(
-    tmp_path: Path,
-    write_shapefile_zip: Callable[..., Path],
-    tiny_geodataframe: Any,
-) -> None:
-    import pyarrow.parquet as pq
-
-    data_dir = tmp_path / "data"
-    raw_dir = data_dir / "raw" / "X01" / "2025"
-    raw_dir.mkdir(parents=True)
-
-    src_zip = write_shapefile_zip(tiny_geodataframe, "X01-2025")
-    dest_zip = raw_dir / src_zip.name
-    dest_zip.write_bytes(src_zip.read_bytes())
-
-    url = "https://example.com/X01-2025.zip"
-    _seed_manifest(
-        data_dir,
-        "X01",
-        "2025",
-        entries=[
-            {
-                "url": url,
-                "rel_path": str(dest_zip.relative_to(data_dir)),
-                "size": dest_zip.stat().st_size,
-            }
-        ],
-    )
-    catalog = _build_catalog(url)
-
-    result = integrate(
-        catalog,
-        "X01",
-        "2025",
-        data_dir=data_dir,
-        output_format="parquet",
-    )
-
-    assert result.output_path == data_dir / "integrated" / "X01-2025.parquet"
-    assert result.output_path.exists()
-
-    file_metadata = pq.read_metadata(result.output_path).metadata or {}
-    assert b"ksj_metadata" in file_metadata
-    payload = json.loads(file_metadata[b"ksj_metadata"].decode("utf-8"))
-    assert payload["dataset_code"] == "X01"
-    assert payload["coverage_summary"]["strategy"] == "national"
-
-
 def test_integrate_honours_output_path_override(
     tmp_path: Path,
     write_shapefile_zip: Callable[..., Path],
@@ -199,13 +151,12 @@ def test_integrate_honours_output_path_override(
     )
     catalog = _build_catalog(url)
 
-    custom = tmp_path / "custom" / "out.parquet"
+    custom = tmp_path / "custom" / "out.gpkg"
     result = integrate(
         catalog,
         "X01",
         "2025",
         data_dir=data_dir,
-        output_format="parquet",
         output_path=custom,
     )
 

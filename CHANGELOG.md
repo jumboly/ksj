@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Removed (Breaking)
+
+- **GeoParquet 出力 (Phase 6 ロールバック)**: `ksj integrate --format parquet` / `ksj convert` コマンド / `pyarrow` 依存を全廃。出力は GeoPackage のみ。Parquet が必要なケースは GeoPackage から GDAL/DuckDB 等で別途変換する想定。multi-layer や複数 dataset を 1 ファイルに集約する将来要件 (Phase 11/13 案) では Parquet の 1 ファイル = 1 テーブル制約が制約になり、設計を GeoPackage 単線に絞った
+
 ## [0.1.0] - 2026-04-18
 
 初回リリース。MVP として N03 (行政区域) / L03-a (土地利用細分メッシュ、2021 + 1976 旧測地系) / A03 (三大都市圏計画区域) / A53 (医療圏) の 5 件で end-to-end 動作を検証済み。

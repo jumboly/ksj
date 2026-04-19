@@ -14,5 +14,5 @@
 | DBF の 254 バイト住所制限 (A46/A47/A48) | 住所フィールドの切り詰め | 読込後に別記載列を結合する正規化ルールをデータセット毎に定義 |
 | 欠損値の独自コード (`-999`/`-998`/`-997`/`9999`/`999999` 等) | 統計・可視化が歪む | カタログに `null_values` を持たせ、読込時に NaN に正規化 |
 | ラスタデータ (L03-b_r のみ) | ベクタ統合では扱えない | MVP 対象外。`ksj integrate-raster` として将来追加 |
-| 大規模メッシュデータ (mesh250r6: SHP 756MB / GML 1.9GB) | OOM | 分割を逐次読込、`pyarrow.RecordBatch` ストリームで書出。pandas で一気に concat しない |
+| 大規模メッシュデータ (mesh250r6: SHP 756MB / GML 1.9GB) | OOM | 分割を逐次読込、GeoPackage の `append` 書出でストリーミング結合。pandas で一気に concat しない |
 | catalog refresh の所要時間 (131 詳細ページ × 1req/s ≒ 2.5 分) | 初回/全件更新で待たされる | 進捗を `catalog/.refresh_state.json` に記録、`--only <code>` で個別更新可 |

@@ -1,6 +1,6 @@
 # ksj
 
-国土数値情報 (KSJ, 国土交通省) のカタログ管理・ダウンロード・統合を行う CLI ツール。分割配布されたデータ (都道府県・メッシュ・圏域) を全国相当に結合し、CRS 統一・属性正規化した GeoPackage / GeoParquet として出力する。
+国土数値情報 (KSJ, 国土交通省) のカタログ管理・ダウンロード・統合を行う CLI ツール。分割配布されたデータ (都道府県・メッシュ・圏域) を全国相当に結合し、CRS 統一・属性正規化した GeoPackage として出力する。
 
 ## クイックスタート
 
@@ -12,10 +12,9 @@ uv run ksj list                                 # 同梱カタログのデータ
 uv run ksj info N03                             # データセット詳細 (年度別 scope/CRS/形式)
 uv run ksj download N03 --year 2025             # KSJ サイトから ZIP 取得 (約 400MB)
 uv run ksj integrate N03 --year 2025            # data/integrated/N03-2025.gpkg を生成
-uv run ksj convert data/integrated/N03-2025.gpkg --format parquet
 ```
 
-`download` は Range レジューム対応・ホスト別レート制限付きの並列ダウンロード。`integrate` は CRS を JGD2011 (EPSG:6668) に統一し、出典・ライセンス・カバレッジを GeoPackage の `gpkg_metadata` テーブル / GeoParquet の `key_value_metadata` に埋め込む。
+`download` は Range レジューム対応・ホスト別レート制限付きの並列ダウンロード。`integrate` は CRS を JGD2011 (EPSG:6668) に統一し、出典・ライセンス・カバレッジを GeoPackage の `gpkg_metadata` テーブルに埋め込む。
 
 ### 分割データセットの統合
 

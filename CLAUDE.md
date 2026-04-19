@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## プロジェクト概要
 
-国土数値情報 (KSJ, 国土交通省) のカタログ管理・ダウンロード・統合を行う CLI ツール。分割配布 (都道府県・メッシュ・圏域) のデータを全国相当に結合し、CRS 統一・属性正規化した GeoPackage / GeoParquet として出力することが目的。
+国土数値情報 (KSJ, 国土交通省) のカタログ管理・ダウンロード・統合を行う CLI ツール。分割配布 (都道府県・メッシュ・圏域) のデータを全国相当に結合し、CRS 統一・属性正規化した GeoPackage として出力することが目的。
 
 詳細仕様は `docs/` 以下を参照する。索引は [`docs/README.md`](docs/README.md)、個別トピックは `docs/catalog.md` / `docs/cli.md` / `docs/integration.md` / `docs/architecture.md` / `docs/roadmap.md` / `docs/risks.md`。実装は `docs/roadmap.md` の Phase 0 から順次進め、各フェーズ終了時点でユーザーの動作確認を経てから次へ進む運用。
 
@@ -18,9 +18,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | Phase 3: ダウンローダ (download / ingest-local) | ✅ 完了 |
 | Phase 4: 統合パイプライン (national のみ) | ✅ 完了 |
 | Phase 5: 分割統合 (prefecture / mesh / urban_area / regional_bureau) | ✅ 完了 |
-| Phase 6: GeoParquet + convert | ✅ 完了 |
+| Phase 6: GeoParquet + convert | ⛔ 撤回 (2026-04-19) |
 | Phase 7: MVP 5 データセット E2E + ドキュメント | ✅ 完了 |
 | Phase 8: AI エージェント連携 (`--json` 出力 + MCP server) | 未着手 |
+| Phase 9〜13: 自然言語駆動を見据えた拡張案 | 📝 draft (詳細は roadmap.md) |
 
 **更新ルール**: Claude は各フェーズ開始時に該当行を「🔧 作業中」に、完了（ユーザー動作確認 OK）で「✅ 完了」に更新する。先取りで複数行を進めない。
 
@@ -54,7 +55,7 @@ uv run pytest -k "name"         # 名前一致テスト
 - `downloader/` — httpx 非同期でホスト別レート制限・Range レジューム対応の ZIP 取得
 - `reader/` — pyogrio 経由で Shp/GML/GeoJSON を同一 I/F で読み込み、エンコーディング判定も担う
 - `integrator/` — CRS 変換・スキーマ統一・分割結合のパイプライン。`source_selector.py` が「national があれば national のみ、無ければ識別子ごとに最新年度を選んで union」のルールで入力ファイルを決定する
-- `writer/` — GeoPackage / GeoParquet 書出。出典・ライセンス・生成日等のメタデータを埋め込む
+- `writer/` — GeoPackage 書出。出典・ライセンス・生成日等のメタデータを埋め込む
 
 カタログ本体は `catalog/datasets.yaml` (将来追加) にコミットし、KSJ 全 131 データセット分の実 URL・CRS・形式を列挙する。
 

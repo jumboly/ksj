@@ -65,28 +65,22 @@ ksj ingest-local <code> --year YYYY --from PATH
   既存のローカル ZIP を取り込む (オフラインテストや別経路で取得したデータ用)。
 ```
 
-### 統合・変換
+### 統合
 
 ```
 ksj integrate <code> --year YYYY
               [--target-crs EPSG:6668]
-              [--format gpkg|parquet]
               [--format-preference gml,shp,geojson]
               [--strict-year] [--allow-partial]
               [--data-dir PATH] [--out PATH]
-  分割データを結合し CRS 統一・属性正規化して出力する。
+  分割データを結合し CRS 統一・属性正規化して GeoPackage に出力する。
   - --target-crs       : 統合後の CRS (デフォルト EPSG:6668 = JGD2011)
-  - --format           : 出力形式 (デフォルト gpkg)
   - --format-preference: ZIP 内に複数形式が同梱されているとき採用する優先順 (デフォルトは gml > shp > geojson)
   - --strict-year      : 対象年度に完全一致する識別子のみ採用。デフォルトは最新補填あり
                          (例: 本州 46 県 2018、沖縄のみ 2015 も取り込む)
   - --allow-partial    : manifest に無いソースをスキップして続行する (警告のみ)
   - --data-dir         : データ格納ルート (デフォルト ./data)
-  - --out              : 出力先パス (デフォルト data_dir/integrated/{code}-{year}.{ext})
-
-ksj convert <input> --format gpkg|parquet [--out PATH]
-  統合済みファイルの形式を変換する (GeoPackage ⇄ GeoParquet)。メタデータは保全される。
-  入力と同じ形式を指定するとエラーになる。
+  - --out              : 出力先パス (デフォルト data_dir/integrated/{code}-{year}.gpkg)
 ```
 
 ## 補助コマンド
