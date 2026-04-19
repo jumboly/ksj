@@ -5,8 +5,8 @@
 を含む CLI 全体のレイヤを検証する。Phase 7 の MVP (N03 / L03-a / L03-a 旧測地系
 / A03 / A53) 相当を 1 ケースずつ網羅する。
 
-`ksj integrate` は `ksj.cli.load_catalog()` を引数なしで呼んで同梱 datasets.yaml
-を読みに行くため、テスト中は monkeypatch で fixture catalog に差し替える。
+`ksj integrate` は handler 経由で同梱 datasets.yaml を読みに行くため、テスト中は
+monkeypatch で fixture catalog に差し替える。
 """
 
 from __future__ import annotations
@@ -25,8 +25,8 @@ from ksj.cli import app
 
 
 def _patch_catalog(monkeypatch: pytest.MonkeyPatch, catalog: Catalog) -> None:
-    """CLI が `_load_or_exit` 経由で見にいく `load_catalog` を fixture に差し替え。"""
-    monkeypatch.setattr("ksj.cli.load_catalog", lambda: catalog)
+    """handler 側の ``load_catalog_or_raise`` が呼ぶ ``load_catalog`` を差し替える。"""
+    monkeypatch.setattr("ksj.handlers._catalog_loader.load_catalog", lambda: catalog)
 
 
 def _read_metadata(gpkg_path: Path) -> dict[str, Any]:

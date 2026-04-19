@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 import logging
-import shutil
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
@@ -21,35 +18,10 @@ from rich.progress import (
 )
 
 from ksj import __version__, handlers, html_cache
-from ksj.catalog import Catalog, load_catalog
-from ksj.catalog.loader import CatalogNotFoundError
-from ksj.catalog.refresh import (
-    RefreshSummary,
-    refresh_catalog,
-    save_catalog,
-)
-from ksj.downloader import (
-    DownloadResult,
-    DownloadTarget,
-    ManifestEntry,
-    download_many,
-    filename_from_url,
-    load_manifest,
-    pick_targets,
-    save_manifest,
-)
-from ksj.downloader.manifest import LOCAL_URL_PREFIX
+from ksj.downloader import DownloadResult
 from ksj.errors import HandlerError
 from ksj.html_cache import CachePolicy
-from ksj.integrator import (
-    DEFAULT_TARGET_CRS,
-    DownloadRequiredError,
-    NoSourcesError,
-)
-from ksj.integrator import (
-    integrate as integrate_dataset,
-)
-from ksj.reader import NoMatchingFormatError
+from ksj.integrator import DEFAULT_TARGET_CRS
 from ksj.renderers import OutputFormat, json_render, rich_render
 
 app = typer.Typer(
@@ -145,52 +117,6 @@ def version() -> None:
     typer.echo(__version__)
 
 
-def _load_or_exit() -> Catalog:
-    """カタログを読み込み、見つからなければ説明付きで終了する。
-
-    read-only 系は ``ksj.handlers._catalog_loader.load_catalog_or_raise`` を使う。
-    こちらは未移行の書き込み系コマンドが使うため残す。
-    """
-    try:
-        return load_catalog()
-    except CatalogNotFoundError as exc:
-        err_console.print(f"[red]catalog/datasets.yaml が見つかりません: {exc}[/red]")
-        raise typer.Exit(code=1) from exc
-
-
-def _run_refresh(
-    *,
-    only: list[str] | None,
-    parallel: int,
-    rate: float,
-    cache_dir: Path,
-    cache_policy: CachePolicy,
-    status_message: str,
-) -> tuple[Catalog, RefreshSummary]:
-    with console.status(f"[cyan]{status_message}[/cyan]", spinner="dots"):
-        return asyncio.run(
-            refresh_catalog(
-                only=only,
-                parallel=parallel,
-                rate_per_sec=rate,
-                cache_dir=cache_dir,
-                cache_policy=cache_policy,
-            )
-        )
-
-
-def _print_summary_warnings(summary: RefreshSummary) -> None:
-    if summary.unsupported:
-        console.print(
-            f"[yellow]フォームベース配布 (自動 URL 取得不可)[/yellow]: "
-            f"{', '.join(summary.unsupported)}"
-        )
-    if summary.warnings:
-        console.print(f"[yellow]{len(summary.warnings)} 件の警告[/yellow] (先頭 3 件のみ):")
-        for w in summary.warnings[:3]:
-            console.print(f"  {w}")
-
-
 @app.command("list")
 def list_datasets(
     ctx: typer.Context,
@@ -244,6 +170,7 @@ def info(
 
 @catalog_app.command("refresh")
 def catalog_refresh(
+    ctx: typer.Context,
     only: Annotated[
         list[str] | None,
         typer.Option(
@@ -284,29 +211,33 @@ def catalog_refresh(
 
     デフォルトでは HTML キャッシュを優先し、ネットワーク負荷を避ける。
     """
+    fmt = _get_format(ctx)
+    policy = CachePolicy.OFF if no_cache else CachePolicy.READ_WRITE
 
-    catalog, summary = _run_refresh(
-        only=only,
-        parallel=parallel,
-        rate=rate,
-        cache_dir=cache_dir,
-        cache_policy=CachePolicy.OFF if no_cache else CachePolicy.READ_WRITE,
-        status_message="スクレイピング中...",
-    )
+    def _run() -> Any:
+        return handlers.catalog_refresh_data(
+            only=only,
+            parallel=parallel,
+            rate=rate,
+            cache_dir=cache_dir,
+            cache_policy=policy,
+            dry_run=dry_run,
+        )
 
-    console.print(
-        f"[green]取得完了[/green]: {summary.total_datasets} データセット"
-        f" (新規 {len(summary.added)} / 更新 {len(summary.updated)}"
-        f" / 未変更保持 {len(summary.skipped)})"
-    )
-    _print_summary_warnings(summary)
+    try:
+        if fmt is OutputFormat.RICH:
+            with console.status("[cyan]スクレイピング中...[/cyan]", spinner="dots"):
+                report = _run()
+        else:
+            report = _run()
+    except HandlerError as exc:
+        _render_failure(fmt, exc)
+        raise typer.Exit(code=exc.exit_code) from exc
 
-    if dry_run:
-        console.print("[dim]--dry-run のためファイル書き出しはスキップ[/dim]")
-        return
-
-    path = save_catalog(catalog)
-    console.print(f"[green]書き出し[/green]: {path}")
+    if fmt is OutputFormat.JSON:
+        json_render.success("catalog.refresh", report)
+    else:
+        rich_render.refresh_summary(report, console=console, dry_run=dry_run)
 
 
 @catalog_app.command("diff")
@@ -332,6 +263,7 @@ def catalog_diff(ctx: typer.Context) -> None:
 
 @html_app.command("fetch")
 def html_fetch(
+    ctx: typer.Context,
     only: Annotated[
         list[str] | None,
         typer.Option(
@@ -359,22 +291,32 @@ def html_fetch(
     ``ksj catalog refresh`` は保存された HTML をそのまま使うので、初回実行後は
     オフラインでカタログ再生成できる。
     """
+    fmt = _get_format(ctx)
+    policy = CachePolicy.OFF if force else CachePolicy.READ_WRITE
 
-    _, summary = _run_refresh(
-        only=only,
-        parallel=parallel,
-        rate=rate,
-        cache_dir=cache_dir,
-        cache_policy=CachePolicy.OFF if force else CachePolicy.READ_WRITE,
-        status_message="HTML を取得中...",
-    )
+    def _run() -> Any:
+        return handlers.html_fetch_data(
+            only=only,
+            parallel=parallel,
+            rate=rate,
+            cache_dir=cache_dir,
+            cache_policy=policy,
+        )
 
-    stats = html_cache.summary(cache_dir)
-    console.print(
-        f"[green]HTML キャッシュ更新[/green]: {cache_dir} "
-        f"(全 {stats.file_count} ファイル, {stats.total_mb:.1f} MB)"
-    )
-    _print_summary_warnings(summary)
+    try:
+        if fmt is OutputFormat.RICH:
+            with console.status("[cyan]HTML を取得中...[/cyan]", spinner="dots"):
+                report = _run()
+        else:
+            report = _run()
+    except HandlerError as exc:
+        _render_failure(fmt, exc)
+        raise typer.Exit(code=exc.exit_code) from exc
+
+    if fmt is OutputFormat.JSON:
+        json_render.success("html.fetch", report)
+    else:
+        rich_render.html_fetch_summary(report, console=console)
 
 
 @html_app.command("list")
@@ -398,95 +340,15 @@ def html_list(
 # ---- download / ingest-local -----------------------------------------------
 
 
-def _raw_dir(data_dir: Path, code: str, year: str) -> Path:
-    return data_dir / "raw" / code / year
-
-
 def _parse_format_preference(value: str | None) -> list[str] | None:
     if value is None:
         return None
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
-@dataclass(slots=True)
-class _DownloadPlan:
-    """DL ターゲットと manifest 書き込みに必要なカタログメタのペア。"""
-
-    target: DownloadTarget
-    scope: str
-    scope_identifier: str
-    format: str
-
-
-def _plans_from_catalog(
-    catalog: Catalog,
-    code: str,
-    year: str,
-    *,
-    format_preference: list[str] | None,
-    crs_filter: int | None,
-    scope_filter: list[str] | None,
-    prefer_national: bool,
-    dest_root: Path,
-) -> list[_DownloadPlan]:
-    dataset = catalog.datasets.get(code)
-    if dataset is None:
-        err_console.print(f"[red]データセット '{code}' はカタログに存在しません[/red]")
-        raise typer.Exit(code=1)
-    if year not in dataset.versions:
-        years = ", ".join(sorted(dataset.versions)) or "(登録なし)"
-        err_console.print(f"[red]{code} に年度 {year} は存在しません[/red]  利用可能年度: {years}")
-        raise typer.Exit(code=1)
-
-    entries = pick_targets(
-        dataset,
-        year,
-        format_preference=format_preference,
-        crs_filter=crs_filter,
-        scope_filter=scope_filter,
-        prefer_national=prefer_national,
-    )
-    if not entries:
-        err_console.print(
-            f"[red]{code}/{year} で条件にマッチするファイルがありません[/red]"
-            " (--crs / --format-preference / --scope を確認してください)"
-        )
-        raise typer.Exit(code=1)
-
-    return [
-        _DownloadPlan(
-            target=DownloadTarget(
-                url=f.url,
-                dest_path=dest_root / filename_from_url(f.url),
-                expected_size=f.size_bytes,
-            ),
-            scope=str(f.scope),
-            scope_identifier=f.scope_identifier,
-            format=str(f.format),
-        )
-        for f in entries
-    ]
-
-
-def _print_download_summary(results: list[DownloadResult]) -> None:
-    done = [r for r in results if r.ok and not r.skipped]
-    skipped = [r for r in results if r.skipped]
-    failed = [r for r in results if not r.ok]
-    total_bytes = sum(r.downloaded_bytes for r in done)
-    console.print(
-        f"[green]完了[/green]: 新規 {len(done)} / skip {len(skipped)} / 失敗 {len(failed)}"
-        f"  (転送 {total_bytes / (1024 * 1024):.1f} MB)"
-    )
-    if failed:
-        console.print("[yellow]失敗ファイル (再実行で再試行可能):[/yellow]")
-        for r in failed[:10]:
-            console.print(f"  {r.url} — {r.error}")
-        if len(failed) > 10:
-            console.print(f"  ...他 {len(failed) - 10} 件")
-
-
 @app.command()
 def download(
+    ctx: typer.Context,
     code: Annotated[str, typer.Argument(help="データセットコード (例: N03)。")],
     year: Annotated[str, typer.Option("--year", help="取得対象年度 (例: 2025)。")],
     format_preference: Annotated[
@@ -522,90 +384,73 @@ def download(
     rate: Annotated[float, typer.Option("--rate", help="ホスト別の秒間リクエスト上限。")] = 1.0,
 ) -> None:
     """カタログに記載された URL を並列ダウンロードする (Range レジューム対応)。"""
+    fmt = _get_format(ctx)
 
-    if scope and prefer_national:
-        err_console.print("[red]--scope と --prefer-national は同時指定できません[/red]")
-        raise typer.Exit(code=1)
+    try:
+        if fmt is OutputFormat.RICH:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[cyan]ダウンロード中[/cyan]"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TextColumn("files"),
+                TimeElapsedColumn(),
+                console=console,
+                transient=False,
+            ) as progress:
+                task_id = progress.add_task("download", total=0)
 
-    catalog = _load_or_exit()
-    # typer は --scope 未指定時に空 list を返す版と None を返す版があるので両方を
-    # selector 側の「None=無効」シグネチャに揃える
-    plans = _plans_from_catalog(
-        catalog,
-        code,
-        year,
-        format_preference=_parse_format_preference(format_preference),
-        crs_filter=crs,
-        scope_filter=scope or None,
-        prefer_national=prefer_national,
-        dest_root=_raw_dir(data_dir, code, year),
-    )
-    targets = [p.target for p in plans]
+                def _on_start(count: int) -> None:
+                    progress.update(task_id, total=count)
+                    console.print(
+                        f"[cyan]{code}/{year}[/cyan] の {count} ファイルをダウンロードします"
+                        f" (parallel={parallel}, rate={rate}/s)"
+                    )
 
-    console.print(
-        f"[cyan]{code}/{year}[/cyan] の {len(targets)} ファイルをダウンロードします"
-        f" (parallel={parallel}, rate={rate}/s)"
-    )
+                def _on_done(_: DownloadResult) -> None:
+                    progress.advance(task_id)
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[cyan]ダウンロード中[/cyan]"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TextColumn("files"),
-        TimeElapsedColumn(),
-        console=console,
-        transient=False,
-    ) as progress:
-        task_id = progress.add_task("download", total=len(targets))
-
-        def _advance(_: DownloadResult) -> None:
-            progress.advance(task_id)
-
-        results = asyncio.run(
-            download_many(
-                targets,
+                report = handlers.download_data(
+                    code,
+                    year,
+                    data_dir=data_dir,
+                    format_preference=_parse_format_preference(format_preference),
+                    crs_filter=crs,
+                    scope_filter=scope or None,
+                    prefer_national=prefer_national,
+                    parallel=parallel,
+                    rate=rate,
+                    on_start=_on_start,
+                    progress=_on_done,
+                )
+        else:
+            report = handlers.download_data(
+                code,
+                year,
+                data_dir=data_dir,
+                format_preference=_parse_format_preference(format_preference),
+                crs_filter=crs,
+                scope_filter=scope or None,
+                prefer_national=prefer_national,
                 parallel=parallel,
-                rate_per_sec=rate,
-                on_file_done=_advance,
+                rate=rate,
             )
-        )
+    except HandlerError as exc:
+        _render_failure(fmt, exc)
+        raise typer.Exit(code=exc.exit_code) from exc
 
-    manifest = load_manifest(data_dir)
-    previous = {e.url: e for e in manifest.get_entries(code, year)}
-    plan_by_url = {p.target.url: p for p in plans}
-    now = datetime.now(UTC).replace(microsecond=0)
-    merged: dict[str, ManifestEntry] = dict(previous)
-    for result in results:
-        if not result.ok:
-            continue
-        plan = plan_by_url[result.url]
-        # skip は「前回取得した状態のまま」なので downloaded_at を更新しない
-        downloaded_at = (
-            previous[result.url].downloaded_at
-            if (result.skipped and result.url in previous)
-            else now
-        )
-        merged[result.url] = ManifestEntry(
-            url=result.url,
-            path=str(result.path.relative_to(data_dir)),
-            size_bytes=result.path.stat().st_size,
-            downloaded_at=downloaded_at,
-            scope=plan.scope,
-            scope_identifier=plan.scope_identifier,
-            format=plan.format,
-        )
+    if fmt is OutputFormat.JSON:
+        json_render.success("download", report)
+    else:
+        rich_render.download_summary(report, console=console)
 
-    manifest.set_entries(code, year, list(merged.values()))
-    save_manifest(manifest, data_dir)
-
-    _print_download_summary(results)
-    if all(not r.ok for r in results):
+    if report.all_failed:
         raise typer.Exit(code=1)
 
 
 @app.command("ingest-local")
 def ingest_local(
+    ctx: typer.Context,
     code: Annotated[str, typer.Argument(help="データセットコード (例: N03)。")],
     year: Annotated[str, typer.Option("--year", help="対象年度 (例: 2024)。")],
     source: Annotated[
@@ -618,44 +463,22 @@ def ingest_local(
     data_dir: Annotated[Path, typer.Option("--data-dir", help="データ格納ルート。")] = Path("data"),
 ) -> None:
     """ローカル ZIP を `data/raw/<code>/<year>/` に取り込む。"""
-
-    if not source.exists():
-        err_console.print(f"[red]--from で指定されたパスが見つかりません: {source}[/red]")
-        raise typer.Exit(code=1)
-
-    if source.is_dir():
-        zips = sorted(p for p in source.iterdir() if p.is_file() and p.suffix.lower() == ".zip")
-    else:
-        zips = [source]
-    if not zips:
-        err_console.print(f"[red]ZIP が見つかりません: {source}[/red]")
-        raise typer.Exit(code=1)
-
-    dest_root = _raw_dir(data_dir, code, year)
-    dest_root.mkdir(parents=True, exist_ok=True)
-
-    manifest = load_manifest(data_dir)
-    existing = {e.url: e for e in manifest.get_entries(code, year)}
-    now = datetime.now(UTC).replace(microsecond=0)
-    copied: list[Path] = []
-    for zip_path in zips:
-        dest = dest_root / zip_path.name
-        shutil.copy2(zip_path, dest)
-        pseudo_url = f"{LOCAL_URL_PREFIX}{zip_path.resolve()}"
-        existing[pseudo_url] = ManifestEntry(
-            url=pseudo_url,
-            path=str(dest.relative_to(data_dir)),
-            size_bytes=dest.stat().st_size,
-            downloaded_at=now,
+    fmt = _get_format(ctx)
+    try:
+        report = handlers.ingest_local_data(
+            code,
+            year,
+            source=source,
+            data_dir=data_dir,
         )
-        copied.append(dest)
+    except HandlerError as exc:
+        _render_failure(fmt, exc)
+        raise typer.Exit(code=exc.exit_code) from exc
 
-    manifest.set_entries(code, year, list(existing.values()))
-    save_manifest(manifest, data_dir)
-
-    console.print(f"[green]取り込み完了[/green]: {len(copied)} ファイル → {dest_root}")
-    for dest in copied:
-        console.print(f"  {dest.relative_to(data_dir)}")
+    if fmt is OutputFormat.JSON:
+        json_render.success("ingest-local", report)
+    else:
+        rich_render.ingest_local_summary(report, console=console, data_dir=data_dir)
 
 
 # ---- integrate -------------------------------------------------------------
@@ -663,6 +486,7 @@ def ingest_local(
 
 @app.command()
 def integrate(
+    ctx: typer.Context,
     code: Annotated[str, typer.Argument(help="データセットコード (例: N03)。")],
     year: Annotated[str, typer.Option("--year", help="対象年度 (例: 2025)。")],
     target_crs: Annotated[
@@ -710,38 +534,50 @@ def integrate(
     --strict-year で年度完全一致のみに制限、--allow-partial で未取得ソースを
     無視して続行する。
     """
+    fmt = _get_format(ctx)
 
-    catalog = _load_or_exit()
+    def _run() -> Any:
+        return handlers.integrate_data(
+            code,
+            year,
+            data_dir=data_dir,
+            target_crs=target_crs,
+            format_preference=_parse_format_preference(format_preference),
+            strict_year=strict_year,
+            allow_partial=allow_partial,
+            output_path=out,
+        )
+
     try:
-        with console.status(
-            f"[cyan]{code}/{year} を統合中... (CRS={target_crs})[/cyan]",
-            spinner="dots",
-        ):
-            result = integrate_dataset(
-                catalog,
-                code,
-                year,
-                data_dir=data_dir,
-                target_crs=target_crs,
-                format_preference=_parse_format_preference(format_preference),
-                strict_year=strict_year,
-                allow_partial=allow_partial,
-                output_path=out,
-            )
-    except (
-        KeyError,
-        NoSourcesError,
-        DownloadRequiredError,
-        NoMatchingFormatError,
-    ) as exc:
-        err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1) from exc
+        if fmt is OutputFormat.RICH:
+            with console.status(
+                f"[cyan]{code}/{year} を統合中... (CRS={target_crs})[/cyan]",
+                spinner="dots",
+            ):
+                result = _run()
+        else:
+            result = _run()
+    except HandlerError as exc:
+        _render_failure(fmt, exc)
+        raise typer.Exit(code=exc.exit_code) from exc
 
-    console.print(f"[green]統合完了[/green]: {result.output_path}")
-    console.print(f"  strategy   : {result.strategy} (sources={result.source_count})")
-    console.print(f"  target CRS : {result.target_crs} (converted={result.crs_converted})")
-    console.print(f"  layers     : {', '.join(result.layer_names)}")
-    if len(result.source_zips) == 1:
-        console.print(f"  source ZIP : {result.source_zips[0]}")
+    if fmt is OutputFormat.JSON:
+        json_render.success("integrate", result)
     else:
-        console.print(f"  source ZIPs: {len(result.source_zips)} files")
+        rich_render.integrate_summary(result, console=console)
+
+
+@catalog_app.command("summary")
+def catalog_summary_cmd(ctx: typer.Context) -> None:
+    """カタログ全体のメタ集計 (categories / scope_histogram / years_seen) を表示する。"""
+    fmt = _get_format(ctx)
+    try:
+        summary = handlers.catalog_summary_data()
+    except HandlerError as exc:
+        _render_failure(fmt, exc)
+        raise typer.Exit(code=exc.exit_code) from exc
+
+    if fmt is OutputFormat.JSON:
+        json_render.success("catalog.summary", summary)
+    else:
+        rich_render.catalog_summary(summary, console=console)

@@ -1,17 +1,20 @@
-"""read-only 4 コマンドの --json / --format json 出力テスト。
+"""各サブコマンドの --json / --format json 出力テスト。
 
-write 系 (download / integrate / catalog refresh / html fetch / ingest-local)
-は PR #2 で追加する。catalog diff はネットワークに出るため
-``ksj.handlers.catalog.refresh_catalog`` をモックする。
+ネットワークを触る diff / refresh / html fetch は ``refresh_catalog`` を
+monkeypatch で差し替え、download は respx で HTTP を握る。integrate は
+conftest の fixture ZIP を使って実際のパイプラインを通す。
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
+import respx
 from typer.testing import CliRunner
 
 from ksj.catalog.refresh import RefreshSummary
@@ -33,7 +36,7 @@ def _catalog() -> Catalog:
                             FileEntry.model_validate(
                                 {
                                     "scope": "national",
-                                    "url": "https://example.com/N03-2025.zip",
+                                    "url": "https://nlftp.mlit.go.jp/ksj/gml/data/N03/N03-2025/N03-2025.zip",
                                     "format": "shp",
                                     "crs": 6668,
                                 }
@@ -52,7 +55,7 @@ def _catalog() -> Catalog:
                             FileEntry.model_validate(
                                 {
                                     "scope": "mesh3",
-                                    "url": "https://example.com/L03-a-2021-5339.zip",
+                                    "url": "https://nlftp.mlit.go.jp/ksj/gml/data/L03-a/L03-a-2021/L03-a-2021-5339.zip",
                                     "format": "shp",
                                     "crs": 6668,
                                     "mesh_code": "5339",
@@ -276,3 +279,294 @@ def test_rich_mode_still_uses_table(
     # stdout の先頭行は JSON ではない (rich モードの証明)
     first_line = result.stdout.strip().splitlines()[0]
     assert not first_line.startswith("{")
+
+
+# ---- write 系 ---------------------------------------------------------------
+
+
+def test_catalog_summary_json(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: CliRunner,
+) -> None:
+    _patch_catalog(monkeypatch, _catalog())
+    result = runner.invoke(app, ["--json", "catalog", "summary"])
+
+    assert result.exit_code == 0, result.output
+    data = _parse_json_stdout(result.stdout)["data"]
+    assert data["total_datasets"] == 2
+    # categories は count 降順、scope_histogram も同様。キーは存在確認のみで十分
+    assert "政策区域" in data["categories"]
+    assert data["scope_histogram"].get("national", 0) >= 1
+    assert "2021" in data["years_seen"] and "2025" in data["years_seen"]
+
+
+@respx.mock
+def test_download_json_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner: CliRunner,
+) -> None:
+    _patch_catalog(monkeypatch, _catalog())
+    url = "https://nlftp.mlit.go.jp/ksj/gml/data/N03/N03-2025/N03-2025.zip"
+    respx.get(url).mock(return_value=httpx.Response(200, content=b"X" * 512))
+
+    result = runner.invoke(
+        app,
+        [
+            "--json",
+            "download",
+            "N03",
+            "--year",
+            "2025",
+            "--data-dir",
+            str(tmp_path),
+            "--rate",
+            "100",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = _parse_json_stdout(result.stdout)["data"]
+    assert data["code"] == "N03"
+    assert data["year"] == "2025"
+    assert len(data["results"]) == 1
+    assert data["results"][0]["error"] is None
+
+
+def test_download_json_invalid_argument(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner: CliRunner,
+) -> None:
+    """--scope と --prefer-national の同時指定は invalid_argument で弾かれる。"""
+    _patch_catalog(monkeypatch, _catalog())
+    result = runner.invoke(
+        app,
+        [
+            "--json",
+            "download",
+            "N03",
+            "--year",
+            "2025",
+            "--scope",
+            "national",
+            "--prefer-national",
+            "--data-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = _parse_json_stdout(result.stdout)
+    assert payload["ok"] is False
+    assert payload["error_kind"] == "invalid_argument"
+
+
+def test_ingest_local_json(
+    tmp_path: Path,
+    runner: CliRunner,
+) -> None:
+    src_zip = tmp_path / "src.zip"
+    src_zip.write_bytes(b"zipdata")
+    data_dir = tmp_path / "data"
+
+    result = runner.invoke(
+        app,
+        [
+            "--json",
+            "ingest-local",
+            "N03",
+            "--year",
+            "2025",
+            "--from",
+            str(src_zip),
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = _parse_json_stdout(result.stdout)["data"]
+    assert data["code"] == "N03"
+    assert len(data["copied"]) == 1
+
+
+def test_ingest_local_json_missing_source(
+    tmp_path: Path,
+    runner: CliRunner,
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "--json",
+            "ingest-local",
+            "N03",
+            "--year",
+            "2025",
+            "--from",
+            str(tmp_path / "nope.zip"),
+            "--data-dir",
+            str(tmp_path / "data"),
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = _parse_json_stdout(result.stdout)
+    assert payload["error_kind"] == "invalid_argument"
+
+
+def test_catalog_refresh_json_dry_run(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: CliRunner,
+) -> None:
+    fake_catalog = _catalog()
+    summary = RefreshSummary(
+        total_datasets=2,
+        added=[],
+        updated=["N03"],
+        skipped=[],
+        warnings=[],
+        unsupported=[],
+    )
+
+    async def _fake_refresh(**_: Any) -> tuple[Catalog, RefreshSummary]:
+        return fake_catalog, summary
+
+    monkeypatch.setattr("ksj.handlers.catalog.refresh_catalog", _fake_refresh)
+
+    result = runner.invoke(app, ["--json", "catalog", "refresh", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    data = _parse_json_stdout(result.stdout)["data"]
+    assert data["summary"]["total_datasets"] == 2
+    assert data["saved_path"] is None
+
+
+def test_html_fetch_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner: CliRunner,
+) -> None:
+    fake_catalog = _catalog()
+    summary = RefreshSummary(
+        total_datasets=2,
+        added=[],
+        updated=[],
+        skipped=[],
+        warnings=[],
+        unsupported=[],
+    )
+
+    async def _fake_refresh(**_: Any) -> tuple[Catalog, RefreshSummary]:
+        return fake_catalog, summary
+
+    monkeypatch.setattr("ksj.handlers.html.refresh_catalog", _fake_refresh)
+
+    result = runner.invoke(
+        app,
+        ["--json", "html", "fetch", "--cache-dir", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = _parse_json_stdout(result.stdout)["data"]
+    assert data["cache_stats"]["file_count"] == 0
+    assert data["summary"]["total_datasets"] == 2
+
+
+def test_integrate_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    write_shapefile_zip: Callable[..., Path],
+    stage_zip: Callable[[Path, Path], Path],
+    seed_manifest: Callable[..., None],
+    tiny_geodataframe: Any,
+    runner: CliRunner,
+) -> None:
+    """実パイプラインを通して IntegrateResult の JSON 出力を検証する。"""
+    data_dir = tmp_path / "data"
+    src_zip = write_shapefile_zip(tiny_geodataframe, "N03-2025")
+    dest = stage_zip(data_dir / "raw" / "N03" / "2025", src_zip)
+
+    url = "https://example.com/N03-2025.zip"
+    catalog = Catalog(
+        datasets={
+            "N03": Dataset(
+                name="行政区域",
+                license="CC BY 4.0",
+                detail_page="https://example.com/N03.html",
+                versions={
+                    "2025": Version(
+                        files=[
+                            FileEntry.model_validate(
+                                {
+                                    "scope": "national",
+                                    "url": url,
+                                    "format": "shp",
+                                    "crs": 6668,
+                                }
+                            )
+                        ]
+                    )
+                },
+            )
+        }
+    )
+    seed_manifest(
+        data_dir,
+        "N03",
+        "2025",
+        entries=[
+            {
+                "url": url,
+                "rel_path": str(dest.relative_to(data_dir)),
+                "size": dest.stat().st_size,
+                "scope": "national",
+                "format": "shp",
+            }
+        ],
+    )
+    _patch_catalog(monkeypatch, catalog)
+
+    result = runner.invoke(
+        app,
+        [
+            "--json",
+            "integrate",
+            "N03",
+            "--year",
+            "2025",
+            "--data-dir",
+            str(data_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = _parse_json_stdout(result.stdout)["data"]
+    assert data["strategy"] == "national"
+    assert data["layer_names"] == ["N03_2025"]
+    # Path は default=str で文字列化される契約
+    assert isinstance(data["output_path"], str)
+
+
+def test_integrate_json_unknown_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner: CliRunner,
+) -> None:
+    _patch_catalog(monkeypatch, _catalog())
+    result = runner.invoke(
+        app,
+        [
+            "--json",
+            "integrate",
+            "ZZZ",
+            "--year",
+            "2025",
+            "--data-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = _parse_json_stdout(result.stdout)
+    assert payload["error_kind"] == "dataset_not_found"

@@ -162,43 +162,56 @@ uv run ksj integrate A53 --year 2024                 # regional_bureau
 
 ---
 
-## Phase 8: AI エージェント連携 (v0.2.0 候補)
+## Phase 8: AI エージェント連携 - `--json` 出力モード
 
-**動機**: 対話的な KSJ 探査 (「どのデータセットが全国版を持たない?」「A31a の最新版は何ファイル?」「N03 の最新版だけ DL して GPKG に統合して」等) を自然言語インタフェースから通せるようにする。現在の CLI は CliRunner で呼ばれる前提の rich 出力がデフォルトだが、エージェントは構造化データを期待する。
+**状態 (2026-04-19)**: 当初案の MCP server 実装は **Phase 8+ に降格**。理由:
+
+- 主ユースケースは「このフォルダで Claude Code を起動して `ksj` を叩く」。Bash / Read / Glob tool がそのまま使え、`--json` 対応だけで目的を満たす。
+- MCP 経由では生成ファイル (MB〜GB 級 GeoPackage / ZIP) を JSON-RPC で受け渡せず path 文字列だけになる。別プロセスの Claude Desktop 等では返ったパスを自動継続処理できない。同じファイルシステムに Claude Code が居る方が自然。
+- MCP は「他プロジェクトや他ツールに配る価値」が出た時点で追加する (`handlers/` 純粋関数層の設計で後付け容易にしてある)。
 
 **成果物**:
-- **`--json` / `--format json` 出力モード** (全サブコマンド対象、特に `list` / `info` / `catalog diff` / `download` / `integrate` の実行結果):
-  - rich Table / ログ風メッセージの代わりに JSON Lines または 単一 JSON を stdout に
-  - 成功時スキーマと失敗時スキーマ (exit_code, error_kind, message) を docs 化
-  - 既存動作との互換: フラグ未指定時は rich 出力のまま
-- **MCP server** (`src/ksj/mcp/` 新設):
-  - `ksj mcp serve` サブコマンドで stdio / SSE サーバー起動
-  - 公開する Tool: `ksj_list` / `ksj_info` / `ksj_catalog_summary` / `ksj_download` / `ksj_integrate` / `ksj_catalog_refresh` (取り扱い注意の副作用ありは明記)
-  - Tool ごとに JSONSchema を定義 (scope / format / crs_filter の選択肢を enum で列挙)
-  - 副作用の分離: read-only (list/info/summary) と write (download/integrate/refresh) を明示マーク
-- **エージェント向けドキュメント** (`docs/agent.md`):
-  - どの Tool が副作用ありか、並列実行可否、レート制限の扱い
-  - 典型フロー (「全国版のみ DL」「特定 scope 統合」) をサンプル
-  - Claude Desktop / Claude Code での接続手順
 
-**スコープ外** (Phase 8+ 以降):
-- リアルタイム進捗のストリーミング (download の per-file 進捗を MCP の partial response で返す等)
-- エージェント固有の高レベル DSL (「災害系で A31a + A53 を両方 DL → 結合」といった 1 行指示)
+- **`--json` / `--format json` 出力モード** (全サブコマンド):
+  - 成功: `{"ok": true, "command": "...", "data": ...}` (1 行)
+  - 失敗: `{"ok": false, "exit_code", "error_kind", "message"}` (1 行)
+  - 契約は `docs/json-output.md` に集約、`error_kind` enum (`catalog_not_found` / `dataset_not_found` / `no_matching_files` / `download_failed` / `integrate_failed` / `invalid_argument`) を型安全に露出
+  - フラグ未指定時は rich Table / spinner / Progress の従来動作を完全保持
+- **`handlers/` / `renderers/` レイヤ分離**: handler が純粋関数 (dict/dataclass 返却)、renderer が rich / JSON 整形。将来の MCP / Web API 追加で再利用。
+- **`ksj catalog summary` 新設**: カタログ全体メタ集計 (categories / scope_histogram / years_seen) を per-dataset なしで返す。
 
 **動作確認**:
 ```bash
-# --json 出力
-uv run ksj list --json | jq '.[] | select(.scopes | contains(["national"]) | not) | .code'
-uv run ksj info A31a --json | jq '.versions["2024"].files | length'
-
-# MCP server 起動 (stdio)
-uv run ksj mcp serve
-# 別端末で Claude Code などから接続し、自然言語で ksj tool を呼べること
+uv run ksj --json list | jq '.data.rows[] | select(.scopes | contains(["national"]) | not) | .code'
+uv run ksj --json info A31a | jq '.data.versions | map(select(.year=="2024"))[0].files | length'
+uv run ksj --json catalog summary | jq '.data.scope_histogram'
+uv run ksj --json download N03 --year 2025 | jq '.data.results | length'
+uv run ksj --json integrate N03 --year 2025 | jq '.data.output_path'
 ```
 
-**参考**:
-- MCP プロトコル仕様: https://modelcontextprotocol.io/
-- 現 CLI は typer サブコマンド構造で薄いため、`cli.py` 各コマンドのハンドラ関数を再利用して JSON 出力分岐を足す形で収まる想定 (大きな refactor は不要)
+完了 → `v0.2.0` タグ判断。
+
+---
+
+## Phase 8+ draft: MCP server (未着手)
+
+> **降格の経緯**: Phase 8 計画時に MCP server (`ksj mcp serve` stdio/SSE) を含めていたが、ローカル CLI の主ユースケースでは `--json` + Claude Code 直接利用で十分で、ファイル受け渡しの制約 (JSON-RPC で大きいファイルを返せない) もあり降格。他プロジェクト / 他ツール配布の要件が出た時点で着手する。
+
+**想定成果物 (案)**:
+
+- `src/ksj/mcp/server.py` (stdio、将来 SSE) + `tools.py` (ToolSpec: name / handler / input_model / write flag) + `schemas.py` (Scope / Format / CrsFilter enum を catalog schema から import)
+- 公開 tool (副作用区分を description 冒頭の `[read-only]` / `[WRITE]` で明示):
+  - read-only: `ksj_list` / `ksj_info` / `ksj_catalog_summary` / `ksj_catalog_diff`
+  - write: `ksj_catalog_refresh` / `ksj_download` / `ksj_integrate`
+- ハンドラ層は既に `src/ksj/handlers/` に純粋関数で揃っているので、MCP 追加は薄いアダプタで済む
+- 長時間実行は progress 通知なしで完了まで待つ一括レスポンス
+- `docs/agent.md` (tool 一覧 / Claude Desktop / Claude Code 接続手順 / 典型フロー)
+
+**現時点の設計意図メモ** (将来の再着手時に参照):
+
+- dataclass / pydantic モデルを `model_dump(mode="json")` / `asdict` でそのままシリアライズ
+- `asyncio.to_thread(handler, ...)` で同期 handler を MCP event loop から呼ぶ想定 (現 handler シグネチャのまま流用)
+- stdio 使用時は RichHandler を外してプレーン StreamHandler に差し替える (ANSI が client に漏れないよう)
 
 ---
 
