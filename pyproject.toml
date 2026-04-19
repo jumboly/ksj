@@ -1,6 +1,6 @@
 [project]
 name = "ksj"
-version = "0.1.0"
+version = "0.2.0"
 description = "国土数値情報 (KSJ) のカタログ管理・ダウンロード・統合を行う CLI ツール"
 readme = "README.md"
 authors = [
