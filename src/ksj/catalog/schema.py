@@ -178,6 +178,61 @@ class Version(BaseModel):
     notes: str | None = None
 
 
+# Phase 9: 用途タグ語彙 (enum 固定)。
+# 自然言語要求からの推薦・フィルタで使う抽象タグなので、粒度は中〜粗で揃える。
+# 「災害リスク全般」と「水害」のように階層関係のあるタグは併記可能 (list で複数付与)。
+UseCase = Literal[
+    "administrative_boundary",
+    "transportation",
+    "disaster_risk",
+    "flood_risk",
+    "land_use",
+    "population",
+    "facility",
+    "terrain",
+    "climate",
+    "urban_planning",
+    "economy",
+]
+
+# Phase 9: ライセンス分類の大枠。KSJ の license_raw 実測分布をカバーする。
+# `mixed_by_year` / `mixed_by_region` は「年度によって条件が変わる」「県によって
+# 商用可否が分かれる」ケースの親レコード用 (詳細は by_year / constraints に入れる)。
+LicenseKind = Literal[
+    "cc_by_4_0",
+    "cc_by_4_0_partial",
+    "commercial_ok",
+    "non_commercial",
+    "site_terms_only",
+    "mixed_by_year",
+    "mixed_by_region",
+    "unknown",
+]
+
+
+class LicenseProfile(BaseModel):
+    """ライセンスの正規化プロファイル。
+
+    KSJ 利用規約は一律「出典表示必須」のため ``attribution_required`` は既定 True。
+    ``commercial_use`` は True/False に加え ``"unknown"`` (判定不能) と
+    ``"conditional"`` (用途次第、constraints / by_year を参照) を許す。
+    年度別に条件が分岐する場合は ``by_year`` に年度 → 子 LicenseProfile を入れる。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: LicenseKind
+    commercial_use: bool | Literal["unknown", "conditional"] = "unknown"
+    attribution_required: bool = True
+    derivative_works: bool | Literal["unknown"] = "unknown"
+    source_terms_url: str = "https://nlftp.mlit.go.jp/ksj/other/agreement.html"
+    # 県別制限・申請必要等の自由文制約。機械判定不能な細則はここに残して LLM/人間に委ねる
+    constraints: list[str] = Field(default_factory=list)
+    # 年度分岐。キーは年度 (「2019」等の文字列、以降/以前の閾値としても使う)。
+    # LicenseProfile の再帰だが by_year をさらに持つことはないので浅い入れ子のみ
+    by_year: dict[str, LicenseProfile] | None = None
+
+
 class Dataset(BaseModel):
     """1 データセット (例: N03 行政区域)。"""
 
@@ -189,8 +244,10 @@ class Dataset(BaseModel):
     geometry_types: list[Literal["point", "line", "polygon", "raster"]] = Field(
         default_factory=list
     )
-    license: str | None = None
+    license: LicenseProfile | None = None
     license_raw: str | None = None
+    description: str | None = None
+    use_cases: list[UseCase] = Field(default_factory=list)
     notes: str | None = None
     # year 文字列 → Version。YAML 側では "2025" のようなキーで保持される
     versions: dict[str, Version] = Field(default_factory=dict)

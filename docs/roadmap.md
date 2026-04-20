@@ -226,22 +226,31 @@ uv run ksj --json integrate N03 --year 2025 | jq '.data.output_path'
 > - D: バス停 500m 圏の人口を集計 (推薦 → DL → 空間結合)
 > - E: 出典表示要件のみで使えるデータ一覧を CSV
 
-### Phase 9: カタログ正規化 (情報密度の引き上げ) (draft)
+### Phase 9: カタログ正規化 (情報密度の引き上げ) (実装完了 / 動作確認待ち)
 
 **目的**: license / geometry / 用途タグなど、AI エージェントがフィルタ・推薦に使える構造化情報をカタログに揃える。
 
-**成果物 (案)**:
-- `Dataset.license: LicenseProfile | None` — `license_raw` を正規化 (商用可否・出典表示・改変・年度別/県別条件)
-- `Dataset.geometry_types` を refresh で実際に充填 (現状型のみで空)。category + code prefix の規則ベース推定が第一近似、必要なら 1 ファイルだけサンプル読み
-- `Dataset.description: str | None` — LLM 用の 1〜3 文要約 (初回は人手で 124 件)
-- `Dataset.use_cases: list[str]` — 用途タグ (語彙設計は要決定、未確定事項 2)
-- 修正対象: `src/ksj/catalog/schema.py`, `src/ksj/catalog/_normalizers.py`, `src/ksj/catalog/scraper/`, `catalog/datasets.yaml` (一括マイグレーション、差分レビュー用スクリプト推奨)
-- 旧フィールド互換のため追加分はすべて optional。`integrator/pipeline.py:265-291` の metadata 書出しに retrofit が必要
+**実装済み成果物 (2026-04-21)**:
+- `Dataset.license: LicenseProfile | None` — `license_raw` を `normalize_license()` で正規化。全 132 件分類済み (non_commercial 60 / cc_by_4_0 29 / commercial_ok 18 / cc_by_4_0_partial 14 / mixed_by_year 10 / unknown 1)
+- `Dataset.geometry_types` — `infer_geometry_types()` が name 末尾の「（ポリゴン/ポイント/ライン/ラスタ版）」から推定。111/132 件埋込、残り 21 件は「メッシュ」等でカッコ表記なし
+- `Dataset.description: str | None` — 初回は Claude Code が 132 件分を人手生成して annotations.yaml に投入。将来の LLM 再生成は `.scratch/python/generate_descriptions.py` で可
+- `Dataset.use_cases: list[UseCase]` — enum 11 語彙 (`administrative_boundary` / `transportation` / `disaster_risk` / `flood_risk` / `land_use` / `population` / `facility` / `terrain` / `climate` / `urban_planning` / `economy`)。132 件に 1〜3 個ずつ付与
+- **annotations.yaml 分離**: scraper が description/use_cases を上書きしてしまう問題を避けるため、`catalog/annotations.yaml` に別ファイル化。loader が merge、refresh は非触。未登録 code は `RefreshSummary.annotations_missing` で warning 表示
 
-**License 正規化スキーマ案**:
+**修正されたコード**:
+- `src/ksj/catalog/schema.py` — LicenseProfile / UseCase / Dataset 拡張
+- `src/ksj/catalog/_normalizers.py` — normalize_license / infer_geometry_types 追加
+- `src/ksj/catalog/_parser.py` — license_raw の 200 字制限撤廃 (正規化入力用に全文必要)
+- `src/ksj/catalog/loader.py` — annotations.yaml の merge 機能、`load_annotations()` 公開
+- `src/ksj/catalog/refresh.py` — license/geometry の正規化呼出、annotations 欠損検知、save 時の exclude
+- `src/ksj/integrator/pipeline.py` — metadata の license を LicenseProfile dict で埋込
+- `src/ksj/handlers/info.py` + `renderers/rich_render.py` — info 表示に license profile / geometry / use_cases / description
+- `catalog/datasets.yaml` — 132 件一括マイグレーション (`.scratch/python/migrate_catalog_phase9.py`)
+- `catalog/annotations.yaml` — 132 件分の description / use_cases 投入
+
+**License 正規化スキーマ** (確定):
 ```python
 class LicenseProfile(BaseModel):
-    model_config = ConfigDict(extra="forbid")
     kind: Literal[
         "cc_by_4_0", "cc_by_4_0_partial",
         "commercial_ok", "non_commercial",
@@ -249,20 +258,22 @@ class LicenseProfile(BaseModel):
         "unknown",
     ]
     commercial_use: bool | Literal["unknown", "conditional"] = "unknown"
-    attribution_required: bool = True   # KSJ 約款が一律要求
+    attribution_required: bool = True
     derivative_works: bool | Literal["unknown"] = "unknown"
     source_terms_url: str = "https://nlftp.mlit.go.jp/ksj/other/agreement.html"
     constraints: list[str] = Field(default_factory=list)
     by_year: dict[str, "LicenseProfile"] | None = None
 ```
 
-`license_raw` の実測分布 (124 件): `非商用` 約 50 / `CC_BY_4.0` 系 約 30 / `CC_BY 一部制限` 約 12 / `商用可` 約 18 / 年度条件 5 / 県別制限 4 / 「KSJ 約款のほか個別条件」1。
+詳細スキーマは `docs/catalog.md` の「LicenseProfile の正規化」参照。
 
-**動作確認 (案)**:
+**動作確認**:
 ```bash
-uv run ksj catalog refresh --dry-run     # 全 124 件の license が正規化されることを確認
-uv run ksj info A31a                      # license: LicenseProfile(...) が表示
-uv run pytest                             # 既存 E2E (Phase 7) が壊れていない
+uv run ksj info N03                       # cc_by_4_0 / 商用可 / geometry: polygon
+uv run ksj info A09                       # mixed_by_year + by_year 展開 (2018:cc_by_4_0 / _else:non_commercial)
+uv run ksj info A48                       # unknown (license_raw 空の唯一例)
+uv run ksj --json info A09 | jq '.data.license.by_year'
+uv run pytest                             # 179 件全 PASS
 ```
 
 依存: なし (Phase 8 と独立)
@@ -372,6 +383,21 @@ Phase 8 の 7 tool に対して以下を追加。副作用区分は Phase 8 の 
 ---
 
 ## 要調査項目
+
+### refresh と annotations.yaml の整合 (Phase 9 暫定対応後の残課題)
+
+**現状 (2026-04-21)**: `ksj catalog refresh` は `catalog/annotations.yaml` を一切触らない設計。refresh 完了時に `summary.annotations_missing` に「annotations に無い code」を載せ、rich/JSON 双方で warning 表示する暫定対応を入れた (`src/ksj/catalog/refresh.py:RefreshSummary.annotations_missing`)。
+
+以下は未対応の残課題:
+
+1. **新 code の自動 stub 追加**: KSJ サイトに新データセットが増えたとき、現状は warning のみで annotations.yaml への stub (`description: null, use_cases: []`) 追加は手動。scraper 側が annotations を書く逆流を避ける方針だが、CI/運用で気付きを強めたい場合は追加検討
+2. **削除された code の孤児エントリ掃除**: datasets.yaml から消えた code が annotations.yaml に残存しても loader は無視する (merge 対象にならない) ため動作問題なし。見通し上は手動で削除するか、診断コマンド `ksj annotations prune` を検討
+3. **name 変更時の description 陳腐化**: dataset.name が更新されても description は旧 name を前提にした文のまま残る。refresh の diff に name 変更 code を出すか、`ksj annotations diff` で description と name の不一致候補を表示する案
+4. **description / use_cases の品質自動評価**: LLM 生成後の人手レビュー運用で現状は十分だが、use_cases が KSJ の公式分類と乖離していないか監査する仕組みは将来必要
+
+着手基準: annotations 未整備 code が 5 件以上蓄積するか、description 陳腐化で info 出力に明確な不整合が出た時点で再評価する。
+
+---
 
 ### `DownLd_new(...)` 変種とカタログ漏れの扱い (2026-04-21 対応完了)
 

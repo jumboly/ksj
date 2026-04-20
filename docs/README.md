@@ -27,7 +27,7 @@ KSJ のデータ配布単位は大きく 3 パターンある:
 | 言語 | Python 3.12+ |
 | パッケージ管理 | uv (`uv run ksj ...` 実行) |
 | UI | CLI が最優先、TUI/Web は将来拡張 |
-| カタログ | リポジトリ同梱 YAML + `ksj catalog refresh` で再生成 |
+| カタログ | `catalog/datasets.yaml` (scraper 管理) + `catalog/annotations.yaml` (description / use_cases の人手管理、refresh は触らない) |
 | データ保存 | プロジェクト内 `./data/` (デフォルト)、`--data-dir` で上書き |
 | 出力形式 | GeoPackage |
 | 対象範囲 | KSJ 全データセットのカタログ化、統合検証は MVP 5 件 |

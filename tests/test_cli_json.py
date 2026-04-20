@@ -28,7 +28,7 @@ def _catalog() -> Catalog:
             "N03": Dataset(
                 name="行政区域",
                 category="政策区域",
-                license="CC BY 4.0",
+                license_raw="CC BY 4.0",
                 detail_page="https://example.com/N03.html",
                 versions={
                     "2025": Version(
@@ -48,7 +48,7 @@ def _catalog() -> Catalog:
             "L03-a": Dataset(
                 name="土地利用細分メッシュ",
                 category="土地利用",
-                license="CC BY 4.0",
+                license_raw="CC BY 4.0",
                 versions={
                     "2021": Version(
                         files=[
@@ -228,6 +228,7 @@ def test_catalog_diff_json(
         skipped=[],
         warnings=[],
         unsupported=[],
+        annotations_missing=[],
     )
 
     async def _fake_refresh(**_: Any) -> tuple[Catalog, RefreshSummary]:
@@ -427,6 +428,7 @@ def test_catalog_refresh_json_dry_run(
         skipped=[],
         warnings=[],
         unsupported=[],
+        annotations_missing=[],
     )
 
     async def _fake_refresh(**_: Any) -> tuple[Catalog, RefreshSummary]:
@@ -455,6 +457,7 @@ def test_html_fetch_json(
         skipped=[],
         warnings=[],
         unsupported=[],
+        annotations_missing=[],
     )
 
     async def _fake_refresh(**_: Any) -> tuple[Catalog, RefreshSummary]:
@@ -492,7 +495,7 @@ def test_integrate_json(
         datasets={
             "N03": Dataset(
                 name="行政区域",
-                license="CC BY 4.0",
+                license_raw="CC BY 4.0",
                 detail_page="https://example.com/N03.html",
                 versions={
                     "2025": Version(

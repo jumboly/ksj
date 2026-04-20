@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from ksj.catalog import Catalog
 from ksj.errors import ErrorKind, HandlerError
@@ -32,7 +33,12 @@ class DatasetInfo:
     name: str
     category: str | None
     detail_page: str | None
-    license: str | None
+    # LicenseProfile を dict に落として渡す (JSON / rich 双方で素直に扱えるよう)
+    license: dict[str, Any] | None
+    license_raw: str | None
+    geometry_types: list[str]
+    description: str | None
+    use_cases: list[str]
     notes: str | None
     versions: list[VersionInfo]
 
@@ -69,7 +75,13 @@ def dataset_info_data(
         name=dataset.name,
         category=dataset.category,
         detail_page=dataset.detail_page,
-        license=dataset.license,
+        license=(
+            dataset.license.model_dump(mode="json") if dataset.license is not None else None
+        ),
+        license_raw=dataset.license_raw,
+        geometry_types=list(dataset.geometry_types),
+        description=dataset.description,
+        use_cases=list(dataset.use_cases),
         notes=dataset.notes,
         versions=versions,
     )

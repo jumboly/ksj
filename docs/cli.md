@@ -11,7 +11,11 @@ ksj list [--category CAT] [--scope SCOPE]
   カタログ一覧を rich Table で表示する。カテゴリ・scope でフィルタ可能。
 
 ksj info <code>
-  1 データセットの詳細を表示する。年度別の scope 分布、CRS、形式を一覧化する。
+  1 データセットの詳細を表示する。name / category / detail_page / geometry_types /
+  license (正規化プロファイル) / use_cases / description、および年度別の scope 分布・
+  CRS・形式を一覧化する。`mixed_by_year` のライセンスは by_year 分岐を展開表示、
+  `constraints` があれば `※` 行で併記する。
+  --json 指定時は license フィールドが LicenseProfile の dict 形式で出力される。
 ```
 
 ### カタログ管理
@@ -19,13 +23,18 @@ ksj info <code>
 ```
 ksj catalog refresh [--only <code>] [--parallel 2] [--rate 1]
                     [--dry-run] [--no-cache] [--cache-dir PATH]
-  KSJ サイトをスクレイピングしてカタログ YAML を再生成する。
+  KSJ サイトをスクレイピングして catalog/datasets.yaml を再生成する。
+  catalog/annotations.yaml (description / use_cases) は一切触らない。
   - --only <code> : 単一データセットのみ更新 (複数指定可)
   - --parallel N  : 同時接続数 (デフォルト 2)
   - --rate N      : 秒間リクエスト数の上限 (デフォルト 1)
   - --dry-run     : YAML を上書きせずサマリのみ表示
   - --no-cache    : HTML キャッシュを無視して再取得 (取得結果はキャッシュに上書き)
   - --cache-dir   : HTML キャッシュディレクトリ (デフォルト data/html_cache)
+
+  refresh 完了時、annotations.yaml に description/use_cases が未登録の code は
+  "annotations.yaml 未整備: N 件 (..)" として stderr に warning 表示される。
+  新 code が KSJ サイトに追加された場合のリマインダ。
 
 ksj catalog diff
   現在のカタログ YAML と再スクレイプ結果の差分を表示する (コミット前レビュー用)。
@@ -94,21 +103,8 @@ ksj --help        ヘルプ表示 (各サブコマンドにも --help あり)
 
 ## ディレクトリ規約
 
-```
-./                              プロジェクトルート (working dir)
-├── pyproject.toml
-├── uv.lock
-├── .gitignore                  data/ を除外
-├── .scratch/                   使い捨てスクリプト (gitignore)
-├── src/ksj/                    実装
-├── tests/                      テスト
-├── catalog/
-│   └── datasets.yaml           スクレイプ結果のスナップショット
-└── data/                       (gitignore)
-    ├── raw/<code>/<year>/*.zip
-    ├── integrated/<code>-<year>.gpkg
-    ├── html_cache/             KSJ 詳細ページのキャッシュ
-    └── manifest.json           取得 URL・サイズ・取得日時の記録
-```
+ディレクトリツリーの正典は [`architecture.md`](architecture.md#ディレクトリ規約) を参照。CLI から見たときの要点のみ:
 
-reader は ZIP を `vsizip://` で直接読むため、展開済みファイルを置く中間ディレクトリ (extracted/) は持たない。
+- `catalog/datasets.yaml` を更新するのは `ksj catalog refresh` / `ksj html fetch`
+- `catalog/annotations.yaml` は CLI からは触らない (scraper 非触、手動 + LLM 管理)
+- `data/` 配下は `ksj download` / `ksj ingest-local` / `ksj integrate` が生成・消費する

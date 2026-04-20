@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 from rich.table import Table
@@ -50,14 +51,47 @@ def list_datasets(result: ListResult, *, console: Console, err_console: Console)
         err_console.print("[yellow]条件にマッチするデータセットはありません[/yellow]")
 
 
+def _summarize_license(profile: dict[str, Any] | None) -> str:
+    if profile is None:
+        return "unknown"
+    parts: list[str] = [str(profile.get("kind", "unknown"))]
+    commercial = profile.get("commercial_use")
+    if commercial is True:
+        parts.append("商用可")
+    elif commercial is False:
+        parts.append("非商用")
+    elif commercial == "conditional":
+        parts.append("条件付き商用")
+    by_year = profile.get("by_year")
+    if isinstance(by_year, dict) and by_year:
+        parts.append(f"年度別 {len(by_year)} 件")
+    return " / ".join(parts)
+
+
 def dataset_info(info: DatasetInfo, *, console: Console) -> None:
     console.print(f"[bold cyan]{info.code}[/bold cyan]  {info.name}")
     if info.category:
         console.print(f"  category:  {info.category}")
     if info.detail_page:
         console.print(f"  detail:    {info.detail_page}")
-    if info.license:
-        console.print(f"  license:   {info.license}")
+    if info.geometry_types:
+        console.print(f"  geometry:  {', '.join(info.geometry_types)}")
+    console.print(f"  license:   {_summarize_license(info.license)}")
+    if info.license is not None:
+        by_year = info.license.get("by_year")
+        if isinstance(by_year, dict) and by_year:
+            for year, child in sorted(by_year.items()):
+                kind = child.get("kind", "?") if isinstance(child, dict) else "?"
+                label = "上記以外" if year == "_else" else year
+                console.print(f"    [dim]- {label}:[/dim] {kind}")
+        constraints = info.license.get("constraints")
+        if isinstance(constraints, list) and constraints:
+            for c in constraints:
+                console.print(f"    [dim]※ {c}[/dim]")
+    if info.use_cases:
+        console.print(f"  use_cases: {', '.join(info.use_cases)}")
+    if info.description:
+        console.print(f"  description: {info.description}")
     if info.notes:
         console.print(f"  notes:     {info.notes}")
 
@@ -157,6 +191,14 @@ def _print_refresh_warnings(summary: RefreshSummary, *, console: Console) -> Non
         console.print(
             f"[yellow]フォームベース配布 (自動 URL 取得不可)[/yellow]: "
             f"{', '.join(summary.unsupported)}"
+        )
+    if summary.annotations_missing:
+        head = ", ".join(summary.annotations_missing[:5])
+        tail = "..." if len(summary.annotations_missing) > 5 else ""
+        console.print(
+            f"[yellow]annotations.yaml 未整備[/yellow]: "
+            f"{len(summary.annotations_missing)} 件 ({head}{tail}) "
+            "— description / use_cases を追加してください"
         )
     if summary.warnings:
         console.print(f"[yellow]{len(summary.warnings)} 件の警告[/yellow] (先頭 3 件のみ):")

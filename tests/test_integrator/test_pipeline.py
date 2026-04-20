@@ -20,7 +20,7 @@ def _build_catalog(zip_url: str) -> Catalog:
         datasets={
             "X01": Dataset(
                 name="サンプル",
-                license="CC BY 4.0",
+                license_raw="CC BY 4.0",
                 detail_page="https://example.com/X01.html",
                 versions={
                     "2025": Version(
@@ -222,7 +222,7 @@ def _build_prefecture_catalog(entries_by_year: dict[str, list[dict[str, Any]]]) 
         datasets={
             "A09": Dataset(
                 name="都市地域",
-                license="CC BY 4.0",
+                license_raw="CC BY 4.0",
                 detail_page="https://example.com/A09.html",
                 versions=versions,
             )
@@ -391,7 +391,7 @@ def test_integrate_converts_legacy_tokyo_datum(
         datasets={
             "X01": Dataset(
                 name="サンプル",
-                license="CC BY 4.0",
+                license_raw="CC BY 4.0",
                 detail_page="https://example.com/X01.html",
                 versions={
                     "2025": Version(

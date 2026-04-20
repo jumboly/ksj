@@ -29,6 +29,7 @@ from tenacity import (
 
 from ksj import html_cache
 from ksj._http import RETRYABLE_HTTP, HostRateLimiter, build_default_limiters, host_from_url
+from ksj.catalog._normalizers import infer_geometry_types, normalize_license
 from ksj.catalog._parser import (
     IndexEntry,
     ParsedDetailPage,
@@ -36,7 +37,7 @@ from ksj.catalog._parser import (
     parse_detail_page,
     parse_index_page,
 )
-from ksj.catalog.loader import DEFAULT_CATALOG_PATH, load_catalog
+from ksj.catalog.loader import DEFAULT_CATALOG_PATH, load_annotations, load_catalog
 from ksj.catalog.schema import Catalog, Dataset, FileEntry, Version
 from ksj.html_cache import CachePolicy
 
@@ -56,6 +57,7 @@ class RefreshSummary:
     skipped: list[str]
     warnings: list[str]
     unsupported: list[str]  # ダウンロードが form ベースで URL 取得不能
+    annotations_missing: list[str]  # annotations.yaml に description/use_cases が無い code
 
 
 # ---- HTTP レイヤ ------------------------------------------------------------
@@ -183,12 +185,18 @@ def _build_dataset(index: IndexEntry, parsed: ParsedDetailPage) -> Dataset:
         else None
     )
 
+    # description / use_cases は scraper 対象外 (annotations.yaml 管理) のため設定しない
+    license_profile = normalize_license(parsed.license_raw)
+    geometry_types = infer_geometry_types(index.name)
+
     return Dataset(
         # トップページのリンクテキスト (index.name) が正しい。詳細ページの <title>
         # は「国土数値情報ダウンロードサイト」等の汎用タイトルで役に立たないので使わない。
         name=index.name,
         category=category_label,
         detail_page=index.detail_page,
+        geometry_types=geometry_types,
+        license=license_profile,
         license_raw=parsed.license_raw,
         notes=notes,
         versions=version_models,
@@ -294,6 +302,8 @@ async def refresh_catalog(
         total_datasets=len(datasets),
         datasets=datasets,
     )
+    annotated = load_annotations()
+    annotations_missing = sorted(code for code in datasets if code not in annotated)
     summary = RefreshSummary(
         total_datasets=len(datasets),
         added=sorted(added),
@@ -301,6 +311,7 @@ async def refresh_catalog(
         skipped=sorted(skipped),
         warnings=warnings,
         unsupported=sorted(unsupported),
+        annotations_missing=annotations_missing,
     )
     return catalog, summary
 
@@ -338,10 +349,19 @@ def _load_base(path: Path | None) -> Catalog | None:
 
 
 def save_catalog(catalog: Catalog, path: Path | None = None) -> Path:
-    """Catalog を YAML として書き出す。"""
+    """Catalog を YAML として書き出す。
+
+    ``description`` / ``use_cases`` は ``catalog/annotations.yaml`` 側で管理する
+    ため datasets.yaml には書き出さない (refresh で scraper が上書きしてしまい、
+    LLM/人手で埋めた値が消えるのを防ぐ)。
+    """
     target = path if path is not None else DEFAULT_CATALOG_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
-    data = catalog.model_dump(mode="json", exclude_none=True)
+    data = catalog.model_dump(
+        mode="json",
+        exclude_none=True,
+        exclude={"datasets": {"__all__": {"description", "use_cases"}}},
+    )
     with target.open("w", encoding="utf-8") as f:
         yaml.safe_dump(
             data,

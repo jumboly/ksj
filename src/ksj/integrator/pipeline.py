@@ -266,7 +266,9 @@ def _build_metadata(
         "reference_date": version.reference_date,
         "source_index": "https://nlftp.mlit.go.jp/ksj/index.html",
         "source_detail": dataset.detail_page,
-        "license": dataset.license,
+        "license": (
+            dataset.license.model_dump(mode="json") if dataset.license is not None else None
+        ),
         "license_notes": dataset.notes,
         "target_crs": target_crs,
         "source_files": [

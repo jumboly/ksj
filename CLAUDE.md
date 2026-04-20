@@ -22,7 +22,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | Phase 7: MVP 5 データセット E2E + ドキュメント | ✅ 完了 |
 | Phase 8: AI エージェント連携 (`--json` 出力、MCP は Phase 8+ へ降格) | ✅ 完了 |
 | Phase 8+: MCP server | 📝 draft (詳細は roadmap.md) |
-| Phase 9〜13: 自然言語駆動を見据えた拡張案 | 📝 draft (詳細は roadmap.md) |
+| Phase 9: カタログ正規化 (license / geometry_types / description / use_cases) | ✅ 完了 |
+| Phase 10〜13: 自然言語駆動を見据えた拡張案 | 📝 draft (詳細は roadmap.md) |
 
 **更新ルール**: Claude は各フェーズ開始時に該当行を「🔧 作業中」に、完了（ユーザー動作確認 OK）で「✅ 完了」に更新する。先取りで複数行を進めない。
 

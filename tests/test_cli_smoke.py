@@ -68,7 +68,7 @@ def test_smoke_national(
         datasets={
             "N03": Dataset(
                 name="行政区域",
-                license="CC BY 4.0",
+                license_raw="CC BY 4.0",
                 detail_page="https://example.com/N03.html",
                 versions={
                     "2025": Version(
@@ -165,7 +165,7 @@ def test_smoke_mesh(
         datasets={
             "L03-a": Dataset(
                 name="土地利用細分メッシュ",
-                license="CC BY 4.0",
+                license_raw="CC BY 4.0",
                 detail_page="https://example.com/L03-a.html",
                 versions={
                     "2021": Version(files=[FileEntry.model_validate(f) for f in catalog_files])
@@ -207,7 +207,7 @@ def test_smoke_legacy_crs(
         datasets={
             "L03-a": Dataset(
                 name="土地利用細分メッシュ",
-                license="CC BY 4.0",
+                license_raw="CC BY 4.0",
                 detail_page="https://example.com/L03-a.html",
                 versions={
                     "1976": Version(
@@ -307,7 +307,7 @@ def test_smoke_urban_area(
         datasets={
             "A03": Dataset(
                 name="三大都市圏計画区域",
-                license="CC BY 4.0",
+                license_raw="CC BY 4.0",
                 detail_page="https://example.com/A03.html",
                 versions={
                     "2003": Version(files=[FileEntry.model_validate(f) for f in catalog_files])
@@ -379,7 +379,7 @@ def test_smoke_regional_bureau(
         datasets={
             "A53": Dataset(
                 name="医療圏",
-                license="CC BY 4.0",
+                license_raw="CC BY 4.0",
                 detail_page="https://example.com/A53.html",
                 versions={
                     "2024": Version(files=[FileEntry.model_validate(f) for f in catalog_files])
