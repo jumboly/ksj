@@ -167,8 +167,11 @@ def _is_before(a: Tag, b: Tag) -> bool:
 
 # ---- 詳細ページ -----------------------------------------------------------
 
+# KSJ は 2024/09 以降、一部ページで onclick を DownLd() → DownLd_new() に順次切替中。
+# どちらも gis.js で現役定義され引数順 (size, filename, rel_path) と URL 遷移挙動は同一 (差分は
+# DL 完了後に切り替える span id サフィックス `_new` のみ) なので、両方を拾う。
 _DOWNLD_RE = re.compile(
-    r"DownLd\(\s*'([^']*)'\s*,\s*'([^']*)'\s*,\s*'([^']*)'",
+    r"DownLd(?:_new)?\(\s*'([^']*)'\s*,\s*'([^']*)'\s*,\s*'([^']*)'",
 )
 _SIZE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*([KMG]?B)", re.IGNORECASE)
 _SIZE_MULT: dict[str, int] = {

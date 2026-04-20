@@ -373,43 +373,23 @@ Phase 8 の 7 tool に対して以下を追加。副作用区分は Phase 8 の 
 
 ## 要調査項目
 
-### `DownLd_new(...)` 変種とカタログ漏れの扱い (2026-04-18 発見)
+### `DownLd_new(...)` 変種とカタログ漏れの扱い (2026-04-21 対応完了)
 
-**現象**: 現行パーサー (`src/ksj/catalog/_parser.py:170-172`) の `_DOWNLD_RE` は `DownLd\(` のみにマッチし、`DownLd_new(...)` 呼び出しを取りこぼす。影響を受けるデータセット:
+**結論 (2026-04-21)**: `_DOWNLD_RE` を `DownLd(?:_new)?\(` に緩めて両方を取り込む方針で対応済み。`tests/test_parser.py::TestDownLdNewVariant` を追加、`ksj catalog refresh --only L02 --only A16` を実施し `catalog/datasets.yaml` にマージ済み。
 
-| コード | ページ | DownLd( 数 | DownLd_new 数 | 現カタログ収録 |
-|---|---|---|---|---|
-| L02-2025 (地価調査) | `KsjTmplt-L02-2025.html` | 0 | 2,073 | 0 files (versions=[]) |
-| A16-2020 (密集市街地) | `KsjTmplt-A16-2020.html` | 612 | 8 | 2020 年は 48 files (DownLd_new 由来の 8 件だけ漏れ) |
+**調査で判明した事実**:
 
-引数順は `DownLd` と同じ `(size, filename, rel_path)` で、regex を `DownLd(?:_new)?\(` に緩めれば両方拾える (実装確認済み、巻き戻し保留中)。
+1. **`gis.js` の現物で DownLd と DownLd_new の両関数が現役定義済み** (`2024/09/04 kita add` コメント付き `newflag` 変数で分岐)。URL 遷移挙動は両者同一 (`document.location.href = path`)、差分は DL 後の span id サフィックス `_new` のみ
+2. **CSS も同一** (`materialize.css` / `style.css` / `datatables.min.css`)。崩れやメンテ放棄の兆候なし
+3. **index.html からは両者とも 1 回参照**される (collapsible 内、card 一覧には無し)。ただし同じ扱いの dataset が 59 件あり (A13 / A31a / A46 / A53 / N02〜N12 / P11 等)、すべて現行カタログ正規収録。L02 / A16 だけアーカイブ扱いではない
+4. **onclick 関数名の全 132 ページ列挙で検出された関数は `DownLd` と `DownLd_new` の 2 種のみ**。別変種なし
+5. KSJ 側が順次 `DownLd` → `DownLd_new` へ切替中の移行過渡期。L02-2025 は全件 `DownLd_new` 化済み、A16-2020 は地方ブロック版 8 件のみ先行移行
 
-**未確定の論点**:
+**対応内容と結果**:
 
-1. **公式配布ステータス**: L02 / A16 は KSJ トップのカード一覧には載っていないが、`<ul class="collapsible">` パネル (「国土」「政策区域」カテゴリの折りたたみ内) に `<li class="collection-item">` として配置されている。KSJ としての公式配布扱いか、過去アーカイブかをサイト側の位置付けで確認する必要がある。同じ collapsible 内にある A13 (森林地域) 等は現行カタログに登録済みで、構造自体は正規
-2. **他の DownLd 変種の有無**: `DownLd_new` だけか、`DownLd_foo` のような別変種が他ページに無いか、`data/html_cache/` 全体で onclick の関数名を列挙して確認すべき
-3. **カタログ YAML の差分サイズ**: 拾うようにすると YAML が +2,078 URL で膨らむ。コミット粒度・レビュー負荷を踏まえた取り込み方針 (一括 or 段階的、L02 のみ先行 等)
-
-**調査手順 (案)**:
-```bash
-# onclick の関数名を全列挙
-uv run python -c "
-from pathlib import Path
-import re
-names = set()
-for p in Path('data/html_cache').rglob('KsjTmplt-*.html'):
-    for m in re.finditer(r\"onclick=['\\\"][^'\\\"]*?([A-Za-z_][A-Za-z0-9_]*)\\(\", p.read_text(encoding='utf-8', errors='replace')):
-        names.add(m.group(1))
-print(sorted(names))
-"
-
-# KSJ サイト側の L02 / A16 の位置付けを公式ページで目視確認
-# → 確認結果をこの roadmap に追記
-```
-
-**暫定対応状況**:
-- 2026-04-18 時点で実装修正は巻き戻し済み (`src/ksj/catalog/_parser.py` / `tests/test_parser.py` / `catalog/datasets.yaml` は元の状態)
-- 本調査が終わってから、regex 修正 + テスト追加 + `ksj catalog refresh --only L02 --only A16` を正式に適用する
+- **`src/ksj/catalog/_parser.py`**: `_DOWNLD_RE` を `DownLd(?:_new)?\(` に拡張 (経緯コメント付き)
+- **`tests/test_parser.py`**: 合成 HTML で DownLd / DownLd_new 併存を検証するテストを 2 件追加 (13 件全 PASS)
+- **`catalog/datasets.yaml`**: L02 が 0 → 43 年度 / 2,129 files で新規充填 (1983〜2025)。A16-2020 が 48 → 56 files (region scope 8 件追加)。他 130 件は無変更
 
 ---
 

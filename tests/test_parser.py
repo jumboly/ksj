@@ -160,3 +160,62 @@ class TestParseDetailMesh1000h30:
         )
         pref_codes = {f.scope_hints.pref_code for f in r.files if f.scope_hints.pref_code}
         assert pref_codes == set(range(1, 48))
+
+
+class TestDownLdNewVariant:
+    """KSJ は 2024/09 以降、onclick を DownLd() → DownLd_new() に順次切替中。
+
+    両者は gis.js で現役定義され引数順も URL 遷移挙動も同一なので、どちらの
+    表記でもダウンロード行として拾えることを確認する。
+    """
+
+    _SAMPLE = """
+    <html><body><table class="tbl_downloadlist">
+      <thead><tr>
+        <th>地域</th><th>測地系</th><th>年度</th>
+        <th>ファイル容量</th><th>ファイル名</th><th>ダウンロード</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td id="prefecture00">全国</td>
+          <td>世界測地系</td><td>2020年</td>
+          <td>17.42MB</td><td>A16-20_GML.zip</td>
+          <td><a class="btn" id="menu-button"
+             onclick="javascript:DownLd('17.42MB','A16-20_GML.zip','../data/A16/A16-20/A16-20_GML.zip',this);">
+             DL</a></td>
+        </tr>
+        <tr>
+          <td id="prefecture52">東北地方</td>
+          <td>世界測地系</td><td>2020年</td>
+          <td>3.78MB</td><td>A16-20_52_GML.zip</td>
+          <td><a class="btn" id="menu-button"
+             onclick="javascript:DownLd_new('3.78MB','A16-20_52_GML.zip','../data/A16/A16-20/A16-20_52_GML.zip',this);">
+             DL</a></td>
+        </tr>
+      </tbody>
+    </table></body></html>
+    """
+
+    def test_downld_new_is_extracted(self) -> None:
+        r = parse_detail_page(
+            self._SAMPLE,
+            "https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-A16-2020.html",
+            "A16",
+        )
+        urls = {f.url for f in r.files}
+        assert "https://nlftp.mlit.go.jp/ksj/gml/data/A16/A16-20/A16-20_GML.zip" in urls, (
+            "DownLd の行が取れていない"
+        )
+        assert "https://nlftp.mlit.go.jp/ksj/gml/data/A16/A16-20/A16-20_52_GML.zip" in urls, (
+            "DownLd_new の行が取れていない (regex が DownLd 固定になっていないか)"
+        )
+
+    def test_downld_new_size_and_filename_parsed(self) -> None:
+        r = parse_detail_page(
+            self._SAMPLE,
+            "https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-A16-2020.html",
+            "A16",
+        )
+        new_file = next(f for f in r.files if f.filename == "A16-20_52_GML.zip")
+        assert new_file.size_bytes is not None
+        assert new_file.size_raw == "3.78MB"
