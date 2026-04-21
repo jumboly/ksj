@@ -55,12 +55,11 @@ def test_g04a_is_mesh1_distribution() -> None:
 
 
 def test_a03_has_urban_area_scope() -> None:
-    """A03 は三大都市圏 (SYUTO/CHUBU/KINKI) のみ配布されることの回帰テスト。"""
+    """A03 は三大都市圏 (関東圏/中部圏/近畿圏) のみ配布されることの回帰テスト。"""
     catalog = load_catalog()
     dataset = catalog.datasets["A03"]
     scopes = {f.scope for v in dataset.versions.values() for f in v.files}
     assert scopes == {"urban_area"}
-    urban_codes = {
-        f.urban_area_code for v in dataset.versions.values() for f in v.files if f.urban_area_code
-    }
-    assert urban_codes == {"SYUTO", "CHUBU", "KINKI"}
+    urban_areas = {f.urban_area for v in dataset.versions.values() for f in v.files if f.urban_area}
+    # urban_area は HTML text 原文 (「関東圏」等) をそのまま保持する
+    assert urban_areas == {"関東圏", "中部圏", "近畿圏"}

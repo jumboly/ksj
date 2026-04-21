@@ -21,19 +21,19 @@ datasets:
       "2003":
         files:
           - scope: urban_area
-            urban_area_code: SYUTO
+            urban_area: 関東圏
             url: https://nlftp.mlit.go.jp/ksj/gml/data/A03/A03-03/A03-03_SYUTO.zip
             format: shp
             crs: 4301
             size_bytes: 500
           - scope: urban_area
-            urban_area_code: CHUBU
+            urban_area: 中部圏
             url: https://nlftp.mlit.go.jp/ksj/gml/data/A03/A03-03/A03-03_CHUBU.zip
             format: shp
             crs: 4301
             size_bytes: 500
           - scope: urban_area
-            urban_area_code: KINKI
+            urban_area: 近畿圏
             url: https://nlftp.mlit.go.jp/ksj/gml/data/A03/A03-03/A03-03_KINKI.zip
             format: shp
             crs: 4301

@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal, get_args
 
-from ksj.catalog.schema import Format, LicenseProfile
+from ksj.catalog.schema import Format
 
 # ---- Format ----------------------------------------------------------------
 # HTML の「データフォーマット」セクションおよびテーブルの「形式」列に現れるキーワード。
@@ -102,10 +102,18 @@ _CRS_TEXT_MAP: list[tuple[str, int]] = [
 def normalize_crs(*, cell_text: str, filename: str | None = None) -> tuple[int | None, str]:
     """「測地系」列のテキスト + filename サフィックスで EPSG を決定する。
 
-    HTML の「世界測地系」は JGD2000 と JGD2011 を区別しない。filename に
-    ``-jgd2011`` があれば 6668、``-jgd`` があれば 4612 とフォールバックする。
-    filename 情報が無く「世界測地系」のみなら、最新である JGD2011 (6668)
-    を仮定する (A55 / N03 等の新規データセット)。
+    HTML の「世界測地系」は JGD2000 と JGD2011 を区別しない。曖昧解消は
+    filename サフィックスで行う:
+
+    1. ``-jgd2011`` → 6668 (JGD2011)
+    2. ``-tky``     → 4301 (Tokyo Datum)
+    3. ``-jgd`` (末尾数字なし) → 4612 (JGD2000)
+    4. サフィックス無し → 6668 (JGD2011) を既定
+
+    4 のサフィックス無しを 6668 に倒すのは KSJ 側の慣行に合わせたもの。KSJ は
+    旧測地系版と新測地系版を並行配信するときに限り suffix を付け、単一配信では
+    pre-2011 の年度であっても JGD2011 に再投影して提供する (L01 1983 年版など
+    全年度 suffix 無し + 6668 単一系統になっている) ため、年度連動の推定は入れない。
 
     返り値は (epsg_or_none, 原文) のタプル。
     """
@@ -130,6 +138,34 @@ def normalize_crs(*, cell_text: str, filename: str | None = None) -> tuple[int |
     return None, raw
 
 
+# ---- Version year inference ------------------------------------------------
+_YEAR_IN_FILENAME_RE = re.compile(r"[-_]((?:19|20)\d{2})(?:\d{4})?(?=[-_.])")
+_YEAR_TEXT_RE = re.compile(r"((?:19|20)\d{2})\s*年")
+# 元号「平成21年」「昭和60年」「令和3年」等の 2 桁年を西暦に変換する
+_ERA_YEAR_RE = re.compile(r"(昭和|平成|令和)\s*(\d{1,2})\s*年")
+_ERA_BASE: dict[str, int] = {"昭和": 1925, "平成": 1988, "令和": 2018}
+
+
+def infer_version_year(*, year_raw: str | None, filename: str) -> str:
+    """ダウンロード行の年度列テキストと filename から version year (YYYY) を推定する。
+
+    HTML「年度」列の方が filename より信頼できるため先に評価する。
+    いずれにも該当しなければ ``"unknown"``。
+    """
+    raw = year_raw or ""
+    m = _YEAR_TEXT_RE.search(raw)
+    if m is not None:
+        return m.group(1)
+    m_era = _ERA_YEAR_RE.search(raw)
+    if m_era is not None:
+        base = _ERA_BASE[m_era.group(1)]
+        return str(base + int(m_era.group(2)))
+    m = _YEAR_IN_FILENAME_RE.search(filename)
+    if m is not None:
+        return m.group(1)
+    return "unknown"
+
+
 # ---- Scope -----------------------------------------------------------------
 Scope = Literal[
     "national",
@@ -148,57 +184,65 @@ Scope = Literal[
     "special",
 ]
 
-# 47 都道府県コード→名称。prefecture セル判定用
+# 47 都道府県コード→正式名称 (JIS X 0401 準拠、都/道/府/県 サフィックス付き)。
+# prefecture セル判定および DOM id fallback 時の表示名に使用する。
 _PREF_CODE_TO_NAME: dict[int, str] = {
     1: "北海道",
-    2: "青森",
-    3: "岩手",
-    4: "宮城",
-    5: "秋田",
-    6: "山形",
-    7: "福島",
-    8: "茨城",
-    9: "栃木",
-    10: "群馬",
-    11: "埼玉",
-    12: "千葉",
-    13: "東京",
-    14: "神奈川",
-    15: "新潟",
-    16: "富山",
-    17: "石川",
-    18: "福井",
-    19: "山梨",
-    20: "長野",
-    21: "岐阜",
-    22: "静岡",
-    23: "愛知",
-    24: "三重",
-    25: "滋賀",
-    26: "京都",
-    27: "大阪",
-    28: "兵庫",
-    29: "奈良",
-    30: "和歌山",
-    31: "鳥取",
-    32: "島根",
-    33: "岡山",
-    34: "広島",
-    35: "山口",
-    36: "徳島",
-    37: "香川",
-    38: "愛媛",
-    39: "高知",
-    40: "福岡",
-    41: "佐賀",
-    42: "長崎",
-    43: "熊本",
-    44: "大分",
-    45: "宮崎",
-    46: "鹿児島",
-    47: "沖縄",
+    2: "青森県",
+    3: "岩手県",
+    4: "宮城県",
+    5: "秋田県",
+    6: "山形県",
+    7: "福島県",
+    8: "茨城県",
+    9: "栃木県",
+    10: "群馬県",
+    11: "埼玉県",
+    12: "千葉県",
+    13: "東京都",
+    14: "神奈川県",
+    15: "新潟県",
+    16: "富山県",
+    17: "石川県",
+    18: "福井県",
+    19: "山梨県",
+    20: "長野県",
+    21: "岐阜県",
+    22: "静岡県",
+    23: "愛知県",
+    24: "三重県",
+    25: "滋賀県",
+    26: "京都府",
+    27: "大阪府",
+    28: "兵庫県",
+    29: "奈良県",
+    30: "和歌山県",
+    31: "鳥取県",
+    32: "島根県",
+    33: "岡山県",
+    34: "広島県",
+    35: "山口県",
+    36: "徳島県",
+    37: "香川県",
+    38: "愛媛県",
+    39: "高知県",
+    40: "福岡県",
+    41: "佐賀県",
+    42: "長崎県",
+    43: "熊本県",
+    44: "大分県",
+    45: "宮崎県",
+    46: "鹿児島県",
+    47: "沖縄県",
 }
-_PREF_NAMES = {v: k for k, v in _PREF_CODE_TO_NAME.items()}
+# 正式名称および短縮形 (「東京」「京都」) の両方から code を逆引きできる辞書。
+# KSJ HTML は通常「東京都」等の正式名称だが、一部で短縮形が出現する可能性を許容する。
+# `{正式, 短縮}` の set 展開で短縮形が正式名と一致する場合 (「北海道」) は 1 エントリに収束する。
+_PREF_NAMES: dict[str, int] = {
+    name: code
+    for code, full_name in _PREF_CODE_TO_NAME.items()
+    for name in {full_name, re.sub(r"(都|府|県)$", "", full_name)}
+}
 
 # 地方ブロック (KSJ 慣行で 52-59 のコードを付ける)
 _REGION_NAMES = {
@@ -213,24 +257,32 @@ _REGION_NAMES = {
     "沖縄地方",
 }
 
-# 北海道開発局 = 81、地方整備局 = 82-89。KSJ URL の末尾コード (A53-23-82_*.zip
-# 等) で確認済みの対応。沖縄総合事務局は現カタログに出現せずコード不明のため未収録
-# (出現が確認できた時点で追加する)。
-_BUREAU_NAME_TO_CODE: dict[str, str] = {
-    "北海道開発局": "81",
-    "東北地方整備局": "82",
-    "関東地方整備局": "83",
-    "北陸地方整備局": "84",
-    "中部地方整備局": "85",
-    "近畿地方整備局": "86",
-    "中国地方整備局": "87",
-    "四国地方整備局": "88",
-    "九州地方整備局": "89",
-}
-_BUREAU_NAMES: set[str] = set(_BUREAU_NAME_TO_CODE)
+# 北海道開発局 / 地方整備局 8 件。原文 (日本語名) をそのまま保持する方針なので
+# code への alias は持たない。filename の数値接頭辞 (A53-23-82_*.zip 等) は
+# DOM id fallback (_BUREAU_DOM_CODES) 経由で数値が `bureau` に入ることがあるが、
+# 現行カタログのエントリは全て HTML text 経由で日本語名になる。
+# 沖縄総合事務局は現カタログに出現せず未収録 (出現したら追加する)。
+_BUREAU_NAMES: frozenset[str] = frozenset(
+    {
+        "北海道開発局",
+        "東北地方整備局",
+        "関東地方整備局",
+        "北陸地方整備局",
+        "中部地方整備局",
+        "近畿地方整備局",
+        "中国地方整備局",
+        "四国地方整備局",
+        "九州地方整備局",
+    }
+)
 
-# 三大都市圏。HTML や filename に現れる英字コード
-_URBAN_AREA_CODES = {"SYUTO": "首都圏", "CHUBU": "中部圏", "KINKI": "近畿圏"}
+# 三大都市圏の判定用語彙。
+# HTML text (KSJ 詳細ページの「地域」列) と filename の英字接頭辞の両方に現れうるが、
+# どちらが来ても原文をそのまま ``urban_area`` フィールドに入れる。
+# 「関東圏」と「首都圏」のような KSJ 内の表記揺れは canonical 化せず、統合時の
+# bucket 化や推薦での同一視は downstream (integrator / LLM) に委ねる。
+_URBAN_AREA_TEXT_TOKENS: frozenset[str] = frozenset({"首都圏", "関東圏", "中部圏", "近畿圏"})
+_URBAN_AREA_FILENAME_TOKENS: frozenset[str] = frozenset({"SYUTO", "CHUBU", "KINKI"})
 
 
 @dataclass(slots=True)
@@ -240,12 +292,10 @@ class ScopeHints:
     scope: Scope
     pref_code: int | None = None
     pref_name: str | None = None
-    region_code: str | None = None
-    region_name: str | None = None
-    bureau_code: str | None = None
-    bureau_name: str | None = None
-    urban_area_code: str | None = None
-    urban_area_name: str | None = None
+    # 原文を 1 フィールドで保持 (_code / _name 分離はしない)
+    region: str | None = None
+    bureau: str | None = None
+    urban_area: str | None = None
     mesh_code: str | None = None
 
 
@@ -262,15 +312,23 @@ _VALID_MESH_DIGITS: dict[int, str] = {
 }
 
 
+# KSJ の ``prefectureNN`` 慣行は以下の 3 区間に分かれる。
+# 以前はマジックナンバー (>=80 / >=48) で判定していたが、未使用帯 (01-47/51-59/81-89 以外)
+# が silent に region 化する退行リスクがあったため、明示的な frozenset で
+# 未知値は None (scope 不明) に倒す運用に改めた。
+# 地方区分 51..59: 北海道 / 東北 / 関東 / 中部 / 近畿 / 中国 / 四国 / 九州 / 沖縄
+# 整備局等 81..89: 北海道開発局 / 東北 / 関東 / 北陸 / 中部 / 近畿 / 中国 / 四国 / 九州
+_PREF_DOM_CODES: frozenset[int] = frozenset(range(1, 48))
+_REGION_DOM_CODES: frozenset[int] = frozenset(range(51, 60))
+_BUREAU_DOM_CODES: frozenset[int] = frozenset(range(81, 90))
+
+
 def _parse_dom_id(dom_id: str | None) -> tuple[str, str] | None:
     """td の id 属性から (種別, 値) を抽出する。
 
-    KSJ の code 区間 (``prefectureNN`` の NN 値):
-    - 01..47: 都道府県
-    - 51..59: 地方区分 (51=北海道 / 52=東北 / 53=関東 / 54=中部(甲信越・北陸含む) /
-      55=近畿 / 56=中国 / 57=四国 / 58=九州 / 59=沖縄)
-    - 81..89: 北海道開発局 (81) および地方整備局 (82..89)
-
+    ``prefectureNN`` は KSJ 慣行で 01-47=都道府県 / 51-59=地方区分 /
+    81-89=開発局・整備局 の 3 区間に対応する。未知区間は None を返して
+    呼び出し側で special 等にフォールバックさせる。
     ``aXXXX`` はメッシュコード (L03-b: id=``a3036-1``)。
     """
     if not dom_id:
@@ -279,18 +337,17 @@ def _parse_dom_id(dom_id: str | None) -> tuple[str, str] | None:
     if m:
         code = m.group(1)
         code_int = int(code)
-        if code_int >= 80:
+        if code_int in _BUREAU_DOM_CODES:
             return ("bureau", code)
-        if code_int >= 48:
+        if code_int in _REGION_DOM_CODES:
             return ("region", code)
-        return ("pref", code)
+        if code_int in _PREF_DOM_CODES:
+            return ("pref", code)
+        return None
     m = re.match(r"a(\d{4,9})", dom_id)  # L03-b: id="a3036-1"
     if m:
         return ("mesh", m.group(1))
     return None
-
-
-_URBAN_AREA_JP_NAMES = {"首都圏": "SYUTO", "中部圏": "CHUBU", "近畿圏": "KINKI", "関東圏": "SYUTO"}
 
 
 def classify_scope(
@@ -312,29 +369,17 @@ def classify_scope(
         return ScopeHints("national")
 
     if text in _REGION_NAMES:
-        # region の慣用コード体系は KSJ 公開資料で確認できないため、region_name のみで成立させる
-        return ScopeHints("region", region_name=text)
+        return ScopeHints("region", region=text)
     if text in _BUREAU_NAMES:
-        return ScopeHints(
-            "regional_bureau",
-            bureau_code=_BUREAU_NAME_TO_CODE[text],
-            bureau_name=text,
-        )
+        return ScopeHints("regional_bureau", bureau=text)
 
-    if text in _URBAN_AREA_JP_NAMES:
-        code = _URBAN_AREA_JP_NAMES[text]
-        return ScopeHints("urban_area", urban_area_code=code, urban_area_name=text)
+    if text in _URBAN_AREA_TEXT_TOKENS:
+        return ScopeHints("urban_area", urban_area=text)
 
-    # 都道府県名 (「東京都」「京都府」等を吸収)
-    stripped = re.sub(r"(都|道|府|県)$", "", text)
-    if stripped in _PREF_NAMES:
-        pref_code = _PREF_NAMES[stripped]
-        return ScopeHints(
-            "prefecture", pref_code=pref_code, pref_name=_PREF_CODE_TO_NAME[pref_code]
-        )
+    # 都道府県名。`_PREF_NAMES` は「東京都」「東京」どちらからも code 逆引き可能。
+    # pref_name には text 原文をそのまま入れる (サフィックスの有無を曲げない)。
     if text in _PREF_NAMES:
-        pref_code = _PREF_NAMES[text]
-        return ScopeHints("prefecture", pref_code=pref_code, pref_name=text)
+        return ScopeHints("prefecture", pref_code=_PREF_NAMES[text], pref_name=text)
 
     if re.fullmatch(r"\d{2,9}", text):
         scope = _VALID_MESH_DIGITS.get(len(text))
@@ -353,12 +398,13 @@ def classify_scope(
                 pref_name=_PREF_CODE_TO_NAME.get(pref_code, text or None),
             )
         if kind == "region":
-            # text が `_REGION_NAMES` に無い呼称 (「甲信越・北陸地方」等) でも code と
-            # 元 text で region を成立させる
-            return ScopeHints("region", region_code=value, region_name=text or None)
+            # text が `_REGION_NAMES` に無い呼称 (「甲信越・北陸地方」等) は text 優先、
+            # text が空なら DOM id の数値 code (例: "55") をそのまま region に入れる
+            return ScopeHints("region", region=text or value)
         if kind == "bureau":
-            # text が空 (別表で整備局名が省略されている) でも code から bureau を成立させる
-            return ScopeHints("regional_bureau", bureau_code=value, bureau_name=text or None)
+            # text が空なら DOM id の数値 code (例: "81") をそのまま bureau に入れる。
+            # text があればその日本語名を優先
+            return ScopeHints("regional_bureau", bureau=text or value)
         if kind == "mesh":
             # DOM id="aXXXX" は KSJ 慣行で概ね 4 桁 (1次メッシュ) を指すため、
             # 桁数が合わないときは 1次メッシュ (最粗) にフォールバックする
@@ -367,9 +413,12 @@ def classify_scope(
 
     if filename is not None:
         upper = filename.upper()
-        for ua_code, ua_name in _URBAN_AREA_CODES.items():
-            if ua_code in upper:
-                return ScopeHints("urban_area", urban_area_code=ua_code, urban_area_name=ua_name)
+        for token in _URBAN_AREA_FILENAME_TOKENS:
+            if token in upper:
+                # filename の英字接頭辞をそのまま保存 (SYUTO/CHUBU/KINKI)。
+                # HTML text を持たない配布向けの保険で、現行カタログで発火する
+                # エントリは無い (実運用では HTML text 経由で日本語が入る)。
+                return ScopeHints("urban_area", urban_area=token)
 
     return ScopeHints("special")
 
@@ -410,198 +459,6 @@ def infer_geometry_types(name: str) -> list[GeometryType]:
     return [g for _, g in matches]
 
 
-# ---- License ----------------------------------------------------------------
-# KSJ 詳細ページの「使用許諾条件」欄の文字列を LicenseProfile に正規化する。
-# 実測分布は docs/roadmap.md の Phase 9 節参照。大分類:
-#   1) 非商用 (55 件) ... 「非商用」単独または「有償刊行物」注記つき
-#   2) CC_BY_4.0 (24 件) ... 「オープンデータ（CC_BY_4.0）」
-#   3) CC_BY_4.0 一部制限 (14 件) ... 「（一部制限）」付き、県別/市区町村別条件など
-#   4) 商用可 (18 件) ... 「商用可」
-#   5) 年度分岐 (9 件) ... 「YYYY年以降：X / 上記以外：Y」等
-#   6) 空 (1 件) ... A48
-
-_YEAR_MARKER_RE = re.compile(r"\d{4}\s*年(?:度)?")
-_YEAR_THRESHOLD_RE = re.compile(r"\d{4}\s*年(?:度)?(?:（[^）]+）)?\s*以[降後]")
-_YEAR_KEY_HEAD_RE = re.compile(r"(\d{4})")
-_ELSE_KEY_RE = re.compile(r"(上記以外|それ以外)")
-_YEAR_BLOCK_RE = re.compile(
-    r"(?P<key>"
-    r"(?:\d{4}\s*年(?:度)?(?:（[^）]+）)?(?:以[降後]|以前)?"
-    r"(?:\s*[、,]\s*\d{4}\s*年(?:度)?(?:（[^）]+）)?)*)"
-    r"|上記以外|それ以外"
-    r")"
-    r"\s*[：:]?\s*"
-)
-
-# KSJ 側の表記揺れ (全角アンダースコア、スペース、ハイフン、タイポ「CC_B.Y」) を吸収する
-_CC_BY_VARIANTS: tuple[str, ...] = ("CC_BY_4.0", "CC_BY 4.0", "CC-BY 4.0", "CC_B.Y_4.0")
-_PARTIAL_VARIANTS: tuple[str, ...] = ("（一部制限）", "(一部制限)")
-
-# (検出キーワード群, constraints に追加するラベル) のリスト。
-# license_raw に複数該当があれば重ねて付与する (例: CC_BY_4.0（一部制限） + 岡山県のみ非商用)
-_CONSTRAINT_MARKERS: list[tuple[tuple[str, ...], str]] = [
-    (("岡山県のみ非商用",), "岡山県のみ非商用"),
-    (("有償刊行物",), "有償刊行物を使用"),
-    (("都道府県毎", "市区町村", "地方公共団体ごと"), "市区町村/都道府県毎の個別条件あり"),
-    (("申請等必要", "申請が必要"), "二次利用時に二次利用申請が必要な場合あり"),
-]
-
-
-def _has_year_branching(text: str) -> bool:
-    """年度別分岐が存在するかの判定。
-
-    「整備年度」「作成年度」のような属性的年度は分岐とみなさない (N06 等は
-    一部制限 + 注記のため flat 分類に寄せる)。分岐 trigger は以下のいずれか:
-    - 「XXXX年以降」「XXXX年以後」のような閾値表現
-    - 「XXXX年」+「上記以外」の対 (A09 型)
-    - 複数の異なる年度が出現 (P29 型「2023年度、2021年度：X / 2013年度：Y」)
-    """
-    if "整備年度" in text or "作成年度" in text:
-        return False
-    if _YEAR_THRESHOLD_RE.search(text):
-        return True
-    has_else_marker = "上記以外" in text or "それ以外" in text
-    unique_years = set(_YEAR_MARKER_RE.findall(text))
-    if has_else_marker and len(unique_years) >= 1:
-        return True
-    return len(unique_years) >= 2
-
-
-def _parse_year_branches(text: str) -> dict[str, LicenseProfile]:
-    """年度別条件を by_year 辞書に分解する。
-
-    best-effort: 完璧にパースできないケースはトップレベルで mixed_by_year にまとめ、
-    この関数は最低限拾えた年度だけを返す。空 dict なら分岐検出は失敗。
-    """
-    positions: list[tuple[int, int, str]] = [
-        (m.start(), m.end(), m.group("key")) for m in _YEAR_BLOCK_RE.finditer(text)
-    ]
-    if not positions:
-        return {}
-
-    branches: dict[str, LicenseProfile] = {}
-    for i, (_start, end, key) in enumerate(positions):
-        next_start = positions[i + 1][0] if i + 1 < len(positions) else len(text)
-        value_text = text[end:next_start].strip()
-        if not value_text:
-            continue
-        child = _classify_flat(value_text, nested=True)
-        year_match = _YEAR_KEY_HEAD_RE.search(key)
-        if year_match:
-            branches[year_match.group(1)] = child
-        elif _ELSE_KEY_RE.search(key):
-            branches["_else"] = child
-
-    return branches
-
-
-def _classify_flat(text: str, nested: bool = False) -> LicenseProfile:
-    """単一分類に落とし込む (年度分岐を含まない text を前提)。
-
-    `nested=True` の場合、制約抽出は最小限に留め子プロファイルをコンパクトにする。
-    """
-    constraints: list[str] = []
-    if not nested:
-        for keywords, label in _CONSTRAINT_MARKERS:
-            if any(k in text for k in keywords):
-                constraints.append(label)
-
-    # 判定優先順: 「一部制限」 > 非商用 > CC_BY_4.0 > 商用可 > 利用規約のみ > unknown
-    has_cc_by = any(v in text for v in _CC_BY_VARIANTS)
-    has_partial = any(v in text for v in _PARTIAL_VARIANTS)
-    has_nc = "非商用" in text
-    has_commercial_ok = "商用可" in text
-
-    if has_cc_by and has_partial:
-        return LicenseProfile(
-            kind="cc_by_4_0_partial",
-            commercial_use="conditional",
-            attribution_required=True,
-            derivative_works=True,
-            constraints=constraints,
-        )
-
-    # 「非商用」と「商用可」が同居する文面は年度分岐以外では通常存在しないが、
-    # 子プロファイルで両方が現れたら商用可側を優先 (分岐の「上記以外：非商用」等を
-    # 逆に取らないため、flat の判定は text ブロック単位で独立に行う)
-    if has_nc and not has_commercial_ok:
-        return LicenseProfile(
-            kind="non_commercial",
-            commercial_use=False,
-            attribution_required=True,
-            derivative_works="unknown",
-            constraints=constraints,
-        )
-
-    if has_cc_by:
-        return LicenseProfile(
-            kind="cc_by_4_0",
-            commercial_use=True,
-            attribution_required=True,
-            derivative_works=True,
-            constraints=constraints,
-        )
-
-    if has_commercial_ok:
-        return LicenseProfile(
-            kind="commercial_ok",
-            commercial_use=True,
-            attribution_required=True,
-            derivative_works="unknown",
-            constraints=constraints,
-        )
-
-    # KSJ 利用規約のみを指示する A31a 等 (CC_BY / 商用可否の明示なし)
-    if "利用規約" in text or "国土数値情報ダウンロードサイト" in text:
-        return LicenseProfile(
-            kind="site_terms_only",
-            commercial_use="unknown",
-            attribution_required=True,
-            derivative_works="unknown",
-            constraints=constraints,
-        )
-
-    return LicenseProfile(
-        kind="unknown",
-        commercial_use="unknown",
-        attribution_required=True,
-        derivative_works="unknown",
-        constraints=constraints,
-    )
-
-
-def normalize_license(license_raw: str | None) -> LicenseProfile:
-    """HTML の利用許諾条件テキストを LicenseProfile に正規化する。
-
-    空・None → ``kind="unknown"``。年度分岐を検出した場合は ``kind="mixed_by_year"``
-    を返し、分岐ごとの子プロファイルを ``by_year`` に詰める (best-effort)。
-    単一分類に落とせる場合は ``_classify_flat`` の結果を返す。
-    """
-    if license_raw is None:
-        return LicenseProfile(kind="unknown", commercial_use="unknown", derivative_works="unknown")
-    text = license_raw.strip()
-    if not text:
-        return LicenseProfile(kind="unknown", commercial_use="unknown", derivative_works="unknown")
-
-    if _has_year_branching(text):
-        by_year = _parse_year_branches(text)
-        if by_year:
-            return LicenseProfile(
-                kind="mixed_by_year",
-                commercial_use="conditional",
-                attribution_required=True,
-                derivative_works="unknown",
-                constraints=["年度ごとに条件が異なる"],
-                by_year=by_year,
-            )
-        # 分岐検出は失敗したが trigger はあった → constraints で通知して flat 分類
-        flat = _classify_flat(text)
-        flat.constraints = [*flat.constraints, "年度別条件の可能性あり (license_raw 要確認)"]
-        return flat
-
-    return _classify_flat(text)
-
-
 __all__ = [
     "GeometryType",
     "Scope",
@@ -611,8 +468,8 @@ __all__ = [
     "classify_url_format",
     "detect_formats_in_text",
     "infer_geometry_types",
+    "infer_version_year",
     "normalize_crs",
-    "normalize_license",
 ]
 
 

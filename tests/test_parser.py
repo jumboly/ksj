@@ -33,6 +33,18 @@ class TestParseIndex:
 
 
 class TestParseDetailN03:
+    def test_formats_in_page_matches_page_declaration(self) -> None:
+        # N03 ページ冒頭は「GML(JPGIS2014) / シェープ / GeoJSON」の 3 宣言。
+        # formats_in_page はページ全体の union、Dataset.available_formats の元になる
+        r = parse_detail_page(
+            _read("N03-2025.html"),
+            "https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N03-2025.html",
+            "N03",
+        )
+        assert "gml_jpgis2014" in r.formats_in_page
+        assert "shp" in r.formats_in_page
+        assert "geojson" in r.formats_in_page
+
     def test_many_files_with_national_and_prefectures(self) -> None:
         r = parse_detail_page(
             _read("N03-2025.html"),
@@ -69,8 +81,10 @@ class TestParseDetailA03:
             "https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-A03.html",
             "A03",
         )
-        codes = {f.scope_hints.urban_area_code for f in r.files}
-        assert codes == {"SYUTO", "CHUBU", "KINKI"}
+        codes = {f.scope_hints.urban_area for f in r.files}
+        # A03 の table cell は「関東圏/中部圏/近畿圏」表記。原文をそのまま保持する
+        # (filename 英字接頭辞 SYUTO/CHUBU/KINKI には寄せない)
+        assert codes == {"関東圏", "中部圏", "近畿圏"}
         assert all(f.scope_hints.scope == "urban_area" for f in r.files)
         assert all(f.crs == 4301 for f in r.files)
 

@@ -228,52 +228,44 @@ uv run ksj --json integrate N03 --year 2025 | jq '.data.output_path'
 
 ### Phase 9: カタログ正規化 (情報密度の引き上げ) (実装完了 / 動作確認待ち)
 
-**目的**: license / geometry / 用途タグなど、AI エージェントがフィルタ・推薦に使える構造化情報をカタログに揃える。
+**目的**: geometry / 用途タグ / description など、AI エージェントがフィルタ・推薦に使える構造化情報をカタログに揃える。ライセンスは原文保持に留める。
 
 **実装済み成果物 (2026-04-21)**:
-- `Dataset.license: LicenseProfile | None` — `license_raw` を `normalize_license()` で正規化。全 132 件分類済み (non_commercial 60 / cc_by_4_0 29 / commercial_ok 18 / cc_by_4_0_partial 14 / mixed_by_year 10 / unknown 1)
+- `Dataset.license_raw: str | None` — KSJ 詳細ページ「使用許諾条件」欄の原文を全文保持 (truncate なし)。**構造化分類 (`LicenseProfile`) は一度導入後に撤回** (判定条件がアドホックで保守性に欠けるため。詳細は下「License 構造化の撤回経緯」)
 - `Dataset.geometry_types` — `infer_geometry_types()` が name 末尾の「（ポリゴン/ポイント/ライン/ラスタ版）」から推定。111/132 件埋込、残り 21 件は「メッシュ」等でカッコ表記なし
 - `Dataset.description: str | None` — 初回は Claude Code が 132 件分を人手生成して annotations.yaml に投入。将来の LLM 再生成は `.scratch/python/generate_descriptions.py` で可
 - `Dataset.use_cases: list[UseCase]` — enum 11 語彙 (`administrative_boundary` / `transportation` / `disaster_risk` / `flood_risk` / `land_use` / `population` / `facility` / `terrain` / `climate` / `urban_planning` / `economy`)。132 件に 1〜3 個ずつ付与
 - **annotations.yaml 分離**: scraper が description/use_cases を上書きしてしまう問題を避けるため、`catalog/annotations.yaml` に別ファイル化。loader が merge、refresh は非触。未登録 code は `RefreshSummary.annotations_missing` で warning 表示
 
+**License 構造化の撤回経緯**:
+
+初版では `LicenseProfile` (kind / commercial_use / attribution_required / derivative_works / constraints / by_year) を導入し、`normalize_license()` で `license_raw` を構造化していた。以下の理由で撤回し `license_raw` のみ保持する設計に戻した:
+
+- 年度別分岐の判定条件がアドホック: 「整備年度」「作成年度」を除外、`XXXX年以降` regex、`上記以外` sentinel 等、実測文面に強く依存する規則が多く KSJ 側の文言変更で容易に崩れる
+- 県別制限・「申請等必要」等の細則は自由文で書かれ機械判定できず、`constraints: list[str]` にそのまま退避していたが、結局 LLM / 人間レビューが必要で構造化の恩恵が薄い
+- `_has_year_branching` / `_parse_year_branches` の silent fallback (parse 失敗時に flat 降格) は挙動が読みづらい
+- KSJ 側のタイポ (「CC_B.Y_4.0」) 等の個別対応が増え続ける
+
+採用方針: 原文を正とし、解釈は利用側 (LLM / 人間レビュー) に委ねる。Phase 10 以降で「商用可否」等の派生属性が本当に必要になったら Version 単位で手動付与を再検討する。
+
 **修正されたコード**:
-- `src/ksj/catalog/schema.py` — LicenseProfile / UseCase / Dataset 拡張
-- `src/ksj/catalog/_normalizers.py` — normalize_license / infer_geometry_types 追加
-- `src/ksj/catalog/_parser.py` — license_raw の 200 字制限撤廃 (正規化入力用に全文必要)
+- `src/ksj/catalog/schema.py` — UseCase / Dataset 拡張 (license_raw: str | None のみ)
+- `src/ksj/catalog/_normalizers.py` — infer_geometry_types 追加
+- `src/ksj/catalog/_parser.py` — license_raw の 200 字制限撤廃 (原文を全文保持)
 - `src/ksj/catalog/loader.py` — annotations.yaml の merge 機能、`load_annotations()` 公開
-- `src/ksj/catalog/refresh.py` — license/geometry の正規化呼出、annotations 欠損検知、save 時の exclude
-- `src/ksj/integrator/pipeline.py` — metadata の license を LicenseProfile dict で埋込
-- `src/ksj/handlers/info.py` + `renderers/rich_render.py` — info 表示に license profile / geometry / use_cases / description
-- `catalog/datasets.yaml` — 132 件一括マイグレーション (`.scratch/python/migrate_catalog_phase9.py`)
+- `src/ksj/catalog/refresh.py` — geometry 正規化呼出、annotations 欠損検知、save 時の exclude
+- `src/ksj/integrator/pipeline.py` — metadata の license は license_raw をそのまま埋込
+- `src/ksj/handlers/info.py` + `renderers/rich_render.py` — info 表示に license_raw / geometry / use_cases / description
+- `catalog/datasets.yaml` — 132 件一括マイグレーション (`.scratch/python/migrate_catalog_phase9.py` で初版、`.scratch/python/drop_license_profile.py` で LicenseProfile 撤回)
 - `catalog/annotations.yaml` — 132 件分の description / use_cases 投入
-
-**License 正規化スキーマ** (確定):
-```python
-class LicenseProfile(BaseModel):
-    kind: Literal[
-        "cc_by_4_0", "cc_by_4_0_partial",
-        "commercial_ok", "non_commercial",
-        "site_terms_only", "mixed_by_year", "mixed_by_region",
-        "unknown",
-    ]
-    commercial_use: bool | Literal["unknown", "conditional"] = "unknown"
-    attribution_required: bool = True
-    derivative_works: bool | Literal["unknown"] = "unknown"
-    source_terms_url: str = "https://nlftp.mlit.go.jp/ksj/other/agreement.html"
-    constraints: list[str] = Field(default_factory=list)
-    by_year: dict[str, "LicenseProfile"] | None = None
-```
-
-詳細スキーマは `docs/catalog.md` の「LicenseProfile の正規化」参照。
 
 **動作確認**:
 ```bash
-uv run ksj info N03                       # cc_by_4_0 / 商用可 / geometry: polygon
-uv run ksj info A09                       # mixed_by_year + by_year 展開 (2018:cc_by_4_0 / _else:non_commercial)
-uv run ksj info A48                       # unknown (license_raw 空の唯一例)
-uv run ksj --json info A09 | jq '.data.license.by_year'
-uv run pytest                             # 179 件全 PASS
+uv run ksj info N03                       # license_raw: オープンデータ（CC_BY_4.0） …
+uv run ksj info A09                       # license_raw: 2018年度：CC_BY_4.0 / 上記以外：非商用 …
+uv run ksj info A48                       # license_raw: (空 → 表示なし)
+uv run ksj --json info A09 | jq '.data.license_raw'
+uv run pytest                             # 全 PASS
 ```
 
 依存: なし (Phase 8 と独立)
@@ -282,16 +274,18 @@ uv run pytest                             # 179 件全 PASS
 
 ### Phase 10: フィルタ拡張 (list/info の表現力) (draft)
 
-**目的**: 自然言語要求のうち「商用可」「ポリゴン」「最新版のみ」「特定 CRS」等の制約条件を CLI / MCP で明示的に指定できるようにする。
+**目的**: 自然言語要求のうち「ポリゴン」「最新版のみ」「特定 CRS」「特定用途タグ」等の制約条件を CLI / MCP で明示的に指定できるようにする。
 
 **成果物 (案)**:
-- `ksj list` に追加: `--geometry {point|line|polygon|raster}` / `--license {commercial|attribution-only|cc-by|any}` / `--include-unknown-license` / `--format-filter` / `--crs-filter` / `--year-min` / `--year-max` / `--latest-only` / `--use-case <tag>`
+- `ksj list` に追加: `--geometry {point|line|polygon|raster}` / `--format-filter` / `--crs-filter` / `--year-min` / `--year-max` / `--latest-only` / `--use-case <tag>`
 - `ksj list --format {table|csv|json}` (Phase 8 の `--json` を拡張)
 - `ksj info <code> --json --year YYYY`
 - フィルタロジックは `src/ksj/catalog/query.py` 新設、CLI / MCP で共有
 - MCP `ksj_list` / `ksj_info` も同フィルタに連動
 
-依存: Phase 9 (license / geometry / use_cases が無いとフィルタが空回り)
+**license フィルタについて**: Phase 9 で LicenseProfile を撤回したため、商用可否や CC-BY の絞込は `license_raw` に対する部分一致 (`--license-contains "CC_BY"`) で最低限サポートする案、または LLM にカタログ全体を渡してフィルタさせる運用に委ねる案が候補。必要性が明確になった時点で設計を決める。
+
+依存: Phase 9 (geometry / use_cases が無いとフィルタが空回り)
 
 ---
 
@@ -366,19 +360,17 @@ Phase 8 の 7 tool に対して以下を追加。副作用区分は Phase 8 の 
 
 ### 横断的な考慮事項
 
-- **License 誤分類**: 「年度条件」「県別制限」は機械判定が難しい。`unknown` はフィルタ既定で除外、LLM 提示時には `license_raw` を併記して人間レビューを促す
+- **ライセンス解釈**: `license_raw` のまま保持する方針なので、商用可否・年度別分岐の判定は LLM / 人間レビューに委ねる。必要なら `license_raw` を原文付きで LLM に渡して「このデータは商用利用可か」を問い合わせる運用を想定
 - **推薦のハルシネーション**: 戻り値はカタログ実在 code に限定。`reasoning` フィールドで根拠を必ず添える。`limit` 既定 5
-- **互換破壊**: `Dataset.license` を str → LicenseProfile に変える際は `metadata["license"]` 書出し経路 (`integrator/pipeline.py:265-291`) の retrofit が必要。`license_summary: str` の派生 property を併設して既存利用箇所を壊さない
 - **インデックス規模**: 124 dataset は SQLite FTS5 で十分。embedding 索引は必須ではない
-- **transactional 性**: `ksj_integrate_many` の部分失敗時に rollback するか残すか (未確定事項 5)
+- **transactional 性**: `ksj_integrate_many` の部分失敗時に rollback するか残すか (未確定事項 4)
 
-### 主要な未確定事項 (Phase 9 着手前にユーザー確認)
+### 主要な未確定事項
 
-1. **License 構造**: 案 1 (nested `LicenseProfile`、型安全だが YAML 冗長) vs 案 2 (フラット `commercial_use_default` + 例外時のみ nested)
-2. **`use_cases` タグ語彙**: enum 固定 (型安全) vs フリータグ + 正規化辞書 (拡張性)。`flood_risk` を独立か `disaster_risk` で統括か
-3. **空間結合バックエンド**: GeoPandas のみ (軽量) vs DuckDB-spatial (大規模 OK だが依存重)
-4. **推薦エンジン**: BM25 のみ (依存軽量、決定的) vs sentence-embeddings 同梱 (重量、再現性低下)
-5. **`integrate_many` の transactional 性**: 部分成功を残すか全 rollback するか
+1. **`use_cases` タグ語彙の拡張**: 現状 enum 11 値で固定。`flood_risk` は独立タグとして分離済み。フリータグ化は拡張性より保守負担が大きいと判断 (Phase 9 で決定済み)
+2. **空間結合バックエンド**: GeoPandas のみ (軽量) vs DuckDB-spatial (大規模 OK だが依存重)
+3. **推薦エンジン**: BM25 のみ (依存軽量、決定的) vs sentence-embeddings 同梱 (重量、再現性低下)
+4. **`integrate_many` の transactional 性**: 部分成功を残すか全 rollback するか
 
 ---
 

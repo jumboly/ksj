@@ -69,8 +69,8 @@ def test_format_preference_dedups_by_scope_identifier() -> None:
 def test_format_preference_keeps_distinct_identifiers() -> None:
     catalog = load_catalog(FIXTURE)
     entries = pick_targets(catalog.datasets["A03"], "2003", format_preference=["shp"])
-    # urban_area は識別子が 3 つ (SYUTO/CHUBU/KINKI) で重複しないため全件残る
-    assert {e.urban_area_code for e in entries} == {"SYUTO", "CHUBU", "KINKI"}
+    # urban_area は識別子が 3 つで重複しないため全件残る
+    assert {e.urban_area for e in entries} == {"関東圏", "中部圏", "近畿圏"}
 
 
 def test_crs_filter() -> None:
@@ -105,7 +105,7 @@ def test_prefer_national_falls_back_to_all_when_absent() -> None:
     catalog = load_catalog(FIXTURE)
     entries = pick_targets(catalog.datasets["A03"], "2003", prefer_national=True)
     assert len(entries) == 3
-    assert {e.urban_area_code for e in entries} == {"SYUTO", "CHUBU", "KINKI"}
+    assert {e.urban_area for e in entries} == {"関東圏", "中部圏", "近畿圏"}
 
 
 def test_scope_filter_single_scope() -> None:

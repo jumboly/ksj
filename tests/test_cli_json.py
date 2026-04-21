@@ -140,6 +140,7 @@ def test_info_json(
     data = _parse_json_stdout(result.stdout)["data"]
     assert data["code"] == "N03"
     assert data["name"] == "行政区域"
+    assert "available_formats" in data
     assert len(data["versions"]) == 1
     v = data["versions"][0]
     assert v["year"] == "2025"

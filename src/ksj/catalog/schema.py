@@ -45,41 +45,29 @@ Format = Literal[
 # EPSG 整数で保持。docs/catalog.md の「CRS の正規化」表を参照。
 KNOWN_EPSG = {4301, 4612, 6668, 4326}
 
-# scope → バリデーションで必須となる識別子コードフィールド名。
-# ここに無い scope (national, special, region) は付随コード無しで成立する。
-# region は KSJ 公開資料で慣用コードが明示されておらず、region_name だけで識別する運用。
+# scope → バリデーションで必須となる識別子フィールド名。
+# ここに無い scope (national / region / special) は付随識別子無しで成立する
+# (region は KSJ 公開資料で慣用コードが明示されていないため任意)。
 _SCOPE_REQUIRED_CODE_FIELD: dict[str, str] = {
     "prefecture": "pref_code",
-    "regional_bureau": "bureau_code",
-    "urban_area": "urban_area_code",
-    "river": "river_id",
-    "municipality": "muni_code",
+    "regional_bureau": "bureau",
+    "urban_area": "urban_area",
+    "river": "river",
+    "municipality": "municipality",
     **{f"mesh{i}": "mesh_code" for i in range(1, 7)},
 }
 
-# scope → 表示用の識別子フィールド名のフォールバック順 (最初に埋まっている値を採用)。
-_SCOPE_DISPLAY_FIELDS: dict[str, tuple[str, ...]] = {
+# scope → 識別子フィールドのフォールバック順 (最初に埋まっている値を採用)。
+# prefecture 以外は単一フィールドなので表示用・bucket 用とも同じ。prefecture のみ
+# 表示時は pref_name 優先、bucket 化時は pref_code 優先 (表記ゆれ耐性のため)。
+_SCOPE_IDENTIFIER_FIELDS: dict[str, tuple[str, ...]] = {
     "prefecture": ("pref_name", "pref_code"),
-    "region": ("region_name", "region_code"),
-    "regional_bureau": ("bureau_name", "bureau_code"),
-    "urban_area": ("urban_area_name", "urban_area_code"),
-    "river": ("river_name", "river_id"),
-    "municipality": ("muni_name", "muni_code"),
-    "special": ("special_name", "special_code"),
-    **{f"mesh{i}": ("mesh_code",) for i in range(1, 7)},
-}
-
-# scope → バケット化用の識別子フィールドのフォールバック順 (code 優先)。
-# name は表記ゆれ (「北海道」vs「北海道庁」等) を含みうるため、横断バケット化では
-# 不安定になり得る。表示用の _SCOPE_DISPLAY_FIELDS と対になる名義。
-_SCOPE_BUCKET_FIELDS: dict[str, tuple[str, ...]] = {
-    "prefecture": ("pref_code", "pref_name"),
-    "region": ("region_code", "region_name"),
-    "regional_bureau": ("bureau_code", "bureau_name"),
-    "urban_area": ("urban_area_code", "urban_area_name"),
-    "river": ("river_id", "river_name"),
-    "municipality": ("muni_code", "muni_name"),
-    "special": ("special_code", "special_name"),
+    "region": ("region",),
+    "regional_bureau": ("bureau",),
+    "urban_area": ("urban_area",),
+    "river": ("river",),
+    "municipality": ("municipality",),
+    "special": ("special",),
     **{f"mesh{i}": ("mesh_code",) for i in range(1, 7)},
 }
 
@@ -110,19 +98,15 @@ class FileEntry(BaseModel):
 
     pref_code: int | None = Field(default=None, ge=1, le=47)
     pref_name: str | None = None
-    region_code: str | None = None
-    region_name: str | None = None
-    bureau_code: str | None = None
-    bureau_name: str | None = None
-    urban_area_code: str | None = None
-    urban_area_name: str | None = None
+    # 日本語名が識別子。fallback 時は KSJ 慣行の数値/英字接頭辞が入りうる
+    # (region 51-59 / bureau 81-89 / urban_area SYUTO/CHUBU/KINKI)
+    region: str | None = None
+    bureau: str | None = None
+    urban_area: str | None = None
+    river: str | None = None
+    municipality: str | None = None
+    special: str | None = None
     mesh_code: str | None = None
-    river_id: str | None = None
-    river_name: str | None = None
-    muni_code: str | None = None
-    muni_name: str | None = None
-    special_code: str | None = None
-    special_name: str | None = None
 
     # データセット固有の但し書き (例: mesh* 統計系の Shapefile 男女削除)
     attribute_caveat: str | None = None
@@ -142,7 +126,7 @@ class FileEntry(BaseModel):
         CLI の info 表示などが scope 別フィールドを直接探らなくて済むよう、
         schema 側にまとめる。name が無ければ code にフォールバックする。
         """
-        for field in _SCOPE_DISPLAY_FIELDS.get(self.scope, ()):
+        for field in _SCOPE_IDENTIFIER_FIELDS.get(self.scope, ()):
             value = getattr(self, field)
             if value is not None:
                 return str(value)
@@ -150,16 +134,17 @@ class FileEntry(BaseModel):
 
     @property
     def scope_bucket_key(self) -> str:
-        """分割統合でのバケット化キー (表記ゆれを避けるため code 優先)。
+        """分割統合でのバケット化キー。
 
-        ``scope_identifier`` との対比: こちらは年度横断のバケット化が目的なので
-        表示名より識別子コードの方が安定して信頼できる。
+        prefecture のみ表記ゆれ (「北海道」vs「北海道庁」) への耐性で JIS 整数
+        ``pref_code`` を優先する。それ以外の scope では単一フィールドしか持たない
+        ので ``scope_identifier`` と等価。
         """
-        for field in _SCOPE_BUCKET_FIELDS.get(self.scope, ()):
-            value = getattr(self, field)
-            if value is not None:
-                return str(value)
-        return ""
+        if self.scope == "prefecture":
+            if self.pref_code is not None:
+                return str(self.pref_code)
+            return self.pref_name or ""
+        return self.scope_identifier
 
 
 class Version(BaseModel):
@@ -195,43 +180,6 @@ UseCase = Literal[
     "economy",
 ]
 
-# Phase 9: ライセンス分類の大枠。KSJ の license_raw 実測分布をカバーする。
-# `mixed_by_year` / `mixed_by_region` は「年度によって条件が変わる」「県によって
-# 商用可否が分かれる」ケースの親レコード用 (詳細は by_year / constraints に入れる)。
-LicenseKind = Literal[
-    "cc_by_4_0",
-    "cc_by_4_0_partial",
-    "commercial_ok",
-    "non_commercial",
-    "site_terms_only",
-    "mixed_by_year",
-    "mixed_by_region",
-    "unknown",
-]
-
-
-class LicenseProfile(BaseModel):
-    """ライセンスの正規化プロファイル。
-
-    KSJ 利用規約は一律「出典表示必須」のため ``attribution_required`` は既定 True。
-    ``commercial_use`` は True/False に加え ``"unknown"`` (判定不能) と
-    ``"conditional"`` (用途次第、constraints / by_year を参照) を許す。
-    年度別に条件が分岐する場合は ``by_year`` に年度 → 子 LicenseProfile を入れる。
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    kind: LicenseKind
-    commercial_use: bool | Literal["unknown", "conditional"] = "unknown"
-    attribution_required: bool = True
-    derivative_works: bool | Literal["unknown"] = "unknown"
-    source_terms_url: str = "https://nlftp.mlit.go.jp/ksj/other/agreement.html"
-    # 県別制限・申請必要等の自由文制約。機械判定不能な細則はここに残して LLM/人間に委ねる
-    constraints: list[str] = Field(default_factory=list)
-    # 年度分岐。キーは年度 (「2019」等の文字列、以降/以前の閾値としても使う)。
-    # LicenseProfile の再帰だが by_year をさらに持つことはないので浅い入れ子のみ
-    by_year: dict[str, LicenseProfile] | None = None
-
 
 class Dataset(BaseModel):
     """1 データセット (例: N03 行政区域)。"""
@@ -244,8 +192,13 @@ class Dataset(BaseModel):
     geometry_types: list[Literal["point", "line", "polygon", "raster"]] = Field(
         default_factory=list
     )
-    license: LicenseProfile | None = None
+    # KSJ 詳細ページの「使用/利用許諾条件」欄の原文をそのまま保持する。
+    # 構造化分類は「年度別分岐」「県別制限」等で判定条件が複雑化・恣意的になるため
+    # 採用せず、原文のフィルタ/解釈は LLM / 人間レビューに委ねる方針。
     license_raw: str | None = None
+    # ページ全体で宣言された利用可能 format 一覧 (union)。FileEntry.format = multi
+    # の内訳参照先。詳細は docs/catalog.md の「format の語彙」節を参照。
+    available_formats: list[Format] = Field(default_factory=list)
     description: str | None = None
     use_cases: list[UseCase] = Field(default_factory=list)
     notes: str | None = None

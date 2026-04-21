@@ -339,9 +339,9 @@ def _extract_license(soup: BeautifulSoup) -> str | None:
     存在するため、同一行内の中身のある td を採用する (文書末尾までの find_next で
     巨大な走査にならないよう行スコープに限定)。
 
-    Phase 9 以降、このテキストは ``normalize_license`` の入力に使うため truncate
-    しない。年度分岐 (「YYYY年以降：X / 上記以外：Y」) や県別制限を機械判定する
-    には全文が必要なため。
+    原文のまま保持する (truncate しない)。KSJ の使用許諾条件は「年度別分岐」
+    「県別制限」等で文意が揺れるため、機械分類は採用せず LLM / 人間レビューに
+    委ねる。
     """
     for th in soup.find_all("th"):
         if not isinstance(th, Tag):

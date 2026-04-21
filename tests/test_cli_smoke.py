@@ -263,14 +263,14 @@ def test_smoke_urban_area(
     stage_zip: Callable[[Path, Path], Path],
     seed_manifest: Callable[..., None],
 ) -> None:
-    """A03 相当: urban_area (SYUTO/CHUBU/KINKI) の partial 統合。"""
+    """A03 相当: urban_area (関東圏/中部圏/近畿圏) の partial 統合。"""
     import geopandas as gpd
     from shapely.geometry import Point
 
     data_dir = tmp_path / "data"
     raw_dir = data_dir / "raw" / "A03" / "2003"
 
-    areas = ["SYUTO", "CHUBU", "KINKI"]
+    areas = ["関東圏", "中部圏", "近畿圏"]
     catalog_files: list[dict[str, Any]] = []
     manifest_entries: list[dict[str, Any]] = []
     for i, area in enumerate(areas):
@@ -288,8 +288,7 @@ def test_smoke_urban_area(
                 "url": url,
                 "format": "shp",
                 "crs": 6668,
-                "urban_area_code": area,
-                "urban_area_name": area,
+                "urban_area": area,
             }
         )
         manifest_entries.append(
@@ -360,8 +359,7 @@ def test_smoke_regional_bureau(
                 "url": url,
                 "format": "shp",
                 "crs": 6668,
-                "bureau_code": bureau,
-                "bureau_name": bureau,
+                "bureau": bureau,
             }
         )
         manifest_entries.append(

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -29,7 +28,7 @@ from tenacity import (
 
 from ksj import html_cache
 from ksj._http import RETRYABLE_HTTP, HostRateLimiter, build_default_limiters, host_from_url
-from ksj.catalog._normalizers import infer_geometry_types, normalize_license
+from ksj.catalog._normalizers import infer_geometry_types, infer_version_year
 from ksj.catalog._parser import (
     IndexEntry,
     ParsedDetailPage,
@@ -124,41 +123,15 @@ def _file_entry_from_parsed(parsed: ParsedFile) -> FileEntry | None:
         "size_bytes": parsed.size_bytes,
         "pref_code": hints.pref_code,
         "pref_name": hints.pref_name,
-        "region_code": hints.region_code,
-        "region_name": hints.region_name,
-        "bureau_code": hints.bureau_code,
-        "bureau_name": hints.bureau_name,
-        "urban_area_code": hints.urban_area_code,
-        "urban_area_name": hints.urban_area_name,
+        "region": hints.region,
+        "bureau": hints.bureau,
+        "urban_area": hints.urban_area,
         "mesh_code": hints.mesh_code,
     }
     try:
         return FileEntry.model_validate(data)
     except ValidationError:
         return None
-
-
-_YEAR_IN_FILENAME_RE = re.compile(r"[-_](?:19|20)(\d{2})(?:\d{4})?(?=[-_.])")
-_YEAR_TEXT_RE = re.compile(r"(19|20)(\d{2})\s*年")
-# 元号「平成21年」「昭和60年」「令和3年」等の 2 桁年を西暦に変換する
-_ERA_YEAR_RE = re.compile(r"(昭和|平成|令和)\s*(\d{1,2})\s*年")
-_ERA_BASE: dict[str, int] = {"昭和": 1925, "平成": 1988, "令和": 2018}
-
-
-def _infer_year(parsed: ParsedFile) -> str:
-    """ファイル名 or 年列テキストから版 (YYYY) を推定する。"""
-    raw = parsed.year_raw or ""
-    m = _YEAR_TEXT_RE.search(raw)
-    if m is not None:
-        return m.group(1) + m.group(2)
-    m_era = _ERA_YEAR_RE.search(raw)
-    if m_era is not None:
-        base = _ERA_BASE[m_era.group(1)]
-        return str(base + int(m_era.group(2)))
-    m = _YEAR_IN_FILENAME_RE.search(parsed.filename)
-    if m is not None:
-        return "20" + m.group(1) if int(m.group(1)) < 50 else "19" + m.group(1)
-    return "unknown"
 
 
 def _build_dataset(index: IndexEntry, parsed: ParsedDetailPage) -> Dataset:
@@ -168,7 +141,7 @@ def _build_dataset(index: IndexEntry, parsed: ParsedDetailPage) -> Dataset:
         entry = _file_entry_from_parsed(pfile)
         if entry is None:
             continue
-        year = _infer_year(pfile)
+        year = infer_version_year(year_raw=pfile.year_raw, filename=pfile.filename)
         versions.setdefault(year, []).append(entry)
 
     category_label = index.category
@@ -186,7 +159,6 @@ def _build_dataset(index: IndexEntry, parsed: ParsedDetailPage) -> Dataset:
     )
 
     # description / use_cases は scraper 対象外 (annotations.yaml 管理) のため設定しない
-    license_profile = normalize_license(parsed.license_raw)
     geometry_types = infer_geometry_types(index.name)
 
     return Dataset(
@@ -196,8 +168,8 @@ def _build_dataset(index: IndexEntry, parsed: ParsedDetailPage) -> Dataset:
         category=category_label,
         detail_page=index.detail_page,
         geometry_types=geometry_types,
-        license=license_profile,
         license_raw=parsed.license_raw,
+        available_formats=parsed.formats_in_page,
         notes=notes,
         versions=version_models,
     )

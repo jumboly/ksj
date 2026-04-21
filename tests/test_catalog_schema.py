@@ -28,7 +28,7 @@ def test_file_entry_prefecture_requires_pref_code() -> None:
     assert "pref_code" in str(excinfo.value)
 
 
-def test_file_entry_regional_bureau_requires_bureau_code() -> None:
+def test_file_entry_regional_bureau_requires_bureau() -> None:
     with pytest.raises(ValidationError):
         FileEntry.model_validate(_base_file(scope="regional_bureau"))
 
@@ -65,3 +65,23 @@ def test_dataset_round_trip() -> None:
 def test_catalog_rejects_unknown_top_level_key() -> None:
     with pytest.raises(ValidationError):
         Catalog.model_validate({"datasets": {}, "unknown_key": 1})
+
+
+def test_dataset_available_formats_default_empty() -> None:
+    ds = Dataset.model_validate({"name": "サンプル"})
+    assert ds.available_formats == []
+
+
+def test_dataset_available_formats_roundtrip() -> None:
+    ds = Dataset.model_validate(
+        {
+            "name": "行政区域",
+            "available_formats": ["gml_jpgis2014", "shp", "geojson"],
+        }
+    )
+    assert ds.available_formats == ["gml_jpgis2014", "shp", "geojson"]
+
+
+def test_dataset_available_formats_rejects_unknown_value() -> None:
+    with pytest.raises(ValidationError):
+        Dataset.model_validate({"name": "x", "available_formats": ["parquet"]})

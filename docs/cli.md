@@ -12,10 +12,9 @@ ksj list [--category CAT] [--scope SCOPE]
 
 ksj info <code>
   1 データセットの詳細を表示する。name / category / detail_page / geometry_types /
-  license (正規化プロファイル) / use_cases / description、および年度別の scope 分布・
-  CRS・形式を一覧化する。`mixed_by_year` のライセンスは by_year 分岐を展開表示、
-  `constraints` があれば `※` 行で併記する。
-  --json 指定時は license フィールドが LicenseProfile の dict 形式で出力される。
+  license_raw (「使用許諾条件」欄の原文) / use_cases / description、および年度別の
+  scope 分布・CRS・形式を一覧化する。
+  --json 指定時は license_raw を文字列のまま返す (商用可否の判定等は利用側で行う)。
 ```
 
 ### カタログ管理

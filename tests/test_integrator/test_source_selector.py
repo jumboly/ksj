@@ -119,7 +119,7 @@ def test_select_sources_raises_when_no_eligible_candidates() -> None:
 def test_select_sources_mixes_scopes_when_no_national() -> None:
     files = [
         _file(scope="prefecture", pref_code=1),
-        _file(scope="region", region_name="北海道地方", url="https://example.com/hokkaido.zip"),
+        _file(scope="region", region="北海道地方", url="https://example.com/hokkaido.zip"),
     ]
     dataset = _dataset(*files)
     plan = select_sources(dataset, "2025")
