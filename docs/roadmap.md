@@ -411,6 +411,59 @@ Phase 8 の 7 tool に対して以下を追加。副作用区分は Phase 8 の 
 
 ---
 
+### カタログの HTML 原文保存強化 (2026-04-22 洗い出し)
+
+**目的**: カタログを「人間または LLM が扱いやすい」形に保つため、HTML 原文を残さず変換している箇所を見直す。8a5942d で LicenseProfile 撤回・scope 識別子の単一フィールド化が済んでいるが、なお原文が失われる / 推測成分が主フィールドに混入している箇所が残る。
+
+**【高】原文が完全に捨てられている / 推測しか残らない**:
+
+1. `Dataset.name` — KSJ 詳細ページタイトル (例「国土数値情報｜行政区域データ」) から「国土数値情報」冠と区切りを除去した値だけを保持。原文保存先なし。
+   - 根拠: `src/ksj/catalog/_parser.py` の `_extract_title()` 付近、`refresh.py:137-175`
+   - 対応案: `Dataset.name_raw: str | None` を追加するか、`name` を原文のままにする
+
+2. `Version` の年度キー (文字列 YYYY) — 「平成21年」→ "2009"、「2025年4月」→ "2025" に正規化しているが、`Version` モデルに原文保存フィールドが無い。
+   - 根拠: `src/ksj/catalog/_normalizers.py:149-167` (`infer_version_year`)、`schema.py:150-163` (Version に year_raw 相当なし)
+   - 対応案: `Version.year_raw: str | None` を追加。`versions` dict の key は YYYY のままで lookup 互換を維持
+
+3. `Dataset.available_formats` — ページ全体の「データフォーマット」欄原文 (例「GML形式 (JPGIS2.1) ／シェープファイル形式／GeoJSON形式」) を `[gml_jpgis2014, shp, geojson]` の enum list に変換済みで、原文保存先なし。GML 版数推測も含むため情報落ちが大きい。
+   - 根拠: `schema.py:201`、`refresh.py:171-172`、`_normalizers.py:33-46`
+   - 対応案: `Dataset.available_formats_raw: str | None` を追加し enum list と併存
+
+4. `Dataset.geometry_types` — `name` 末尾の「 (ポリゴン) 」「 (ラスタ版) 」等から推定。name に原文は残るため情報損失は軽微だが、フィールド自体が LLM 運用では必須性が低い。
+   - 根拠: `_normalizers.py:440-459` (`infer_geometry_types`)
+   - 対応案: (1) 廃止して name から LLM に読ませる / (2) 現状維持 + annotations.yaml 補完 / (3) 原文括弧表記を別フィールドで残す、の 3 択を後日決定
+
+**【中】推測成分を含むが `*_raw` で原文は残る**:
+
+5. `FileEntry.crs` の JGD2000 vs JGD2011 判定 — HTML は「世界測地系」しか書かないのに filename サフィックス (`-jgd2011` / `-jgd` / `-tky` / なし) で EPSG を確定値として格納。suffix なしの既定 6668 (JGD2011) は旧年度データで誤りの可能性。
+   - 根拠: `_normalizers.py:102-139` (`normalize_crs`)
+   - 対応案: suffix 不明時は `crs: None` にして推測根拠の薄さを表現。`crs_raw` は既存で原文保持済み
+
+6. `FileEntry.format` の GML 版判定 (JPGIS2.1 vs 2014) — 行単位 HTML は「GML形式」しか書かないことがあり、ページ全体の宣言 context で 2014 に寄せている。行単位の根拠が薄い。
+   - 根拠: `_normalizers.py:77-90` (`classify_row_format`)
+   - 対応案: 版判定できない行は `gml_jpgis21`/`gml_jpgis2014` を付けずニュートラル値にする、または `format_raw` 優先で `format` を None 許容にする
+
+7. `FileEntry.format = "multi"` — filename `_GML.zip` + ページ宣言 formats ≥ 3 で `multi` に丸めているが、N03 等で ~85% が multi になり情報量が少ない。
+   - 根拠: `_normalizers.py:49-74` (`classify_url_format`)
+   - 対応案: `FileEntry.contained_formats: list[Format]` を追加、または `multi` 廃止で list 化。`available_formats_raw` (項目 3) 導入後は緊急度が下がる
+
+**【低】現状維持で合意済み (参考)**:
+
+`pref_code` + `pref_name` 併存、`scope` enum、`mesh_code` の DOM id fallback、`license_raw` / `crs_raw` / `format_raw` の原文保持、`annotations.yaml` 分離は既存方針どおりで変更不要。
+
+**推奨対応の優先度** (将来着手時の目安):
+
+1. `Version.year_raw` 追加 (影響範囲小・情報落ちが一番大きい)
+2. `Dataset.available_formats_raw` 追加
+3. `Dataset.name` の扱い整理 (`name_raw` 追加 or 原文化)
+4. `normalize_crs` の suffix 不明時を `crs: None` に
+5. `geometry_types` の去就決定
+6. `format` の GML 版・`multi` 運用見直し
+
+**着手基準**: 自然言語駆動 (Phase 10 以降) で LLM にカタログを渡して解釈させる運用が本格化したとき、原文欠落が不便になった時点で再評価する。Phase 9 の延長線上で `Version.year_raw` だけ先行実装するのはコストが小さく価値が高い。
+
+---
+
 ## MVP 対象データセット
 
 scope / CRS / format の組み合わせ網羅を目的に以下 5 件を MVP 対象とする:
